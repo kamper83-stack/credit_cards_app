@@ -1,7 +1,7 @@
-import { Trash2, Trophy, Calendar, CreditCard } from 'lucide-react';
+import { Trash2, Trophy, Calendar, CreditCard, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { ProgressRing } from './ProgressRing';
 import type { Goal } from '../types';
-import { format } from 'date-fns';
+import { format, differenceInDays, parseISO } from 'date-fns';
 import { he } from 'date-fns/locale';
 
 const PERIOD_LABELS: Record<string, string> = {
@@ -20,9 +20,23 @@ interface Props {
   onDelete: () => void;
 }
 
+function getPaceInfo(goal: Goal) {
+  if (!goal.current_period_start || !goal.current_period_end) return null;
+  const start = parseISO(goal.current_period_start);
+  const end = parseISO(goal.current_period_end);
+  const totalDays = differenceInDays(end, start) || 1;
+  const elapsed = totalDays - (goal.days_left ?? 0);
+  const pacePct = Math.min((elapsed / totalDays) * 100, 100);
+  return { pacePct, elapsedDays: elapsed, totalDays };
+}
+
 export function GoalCard({ goal, onDelete }: Props) {
   const pct = Math.round(goal.progress);
   const done = pct >= 100;
+  const paceInfo = !done ? getPaceInfo(goal) : null;
+  const pacePct = paceInfo?.pacePct ?? 0;
+  const isAhead = goal.progress >= pacePct;
+  const isBehind = !done && goal.progress < pacePct - 5; // 5% tolerance
 
   return (
     <div className="bg-slate-800 rounded-2xl p-5 border border-slate-700 hover:border-slate-500 transition-all">
@@ -71,15 +85,36 @@ export function GoalCard({ goal, onDelete }: Props) {
         </div>
       </div>
 
-      {/* Progress bar */}
-      <div className="mt-4 bg-slate-700 rounded-full h-2 overflow-hidden">
-        <div
-          className="h-full rounded-full transition-all duration-700"
-          style={{
-            width: `${Math.min(goal.progress, 100)}%`,
-            background: done ? '#22c55e' : goal.card_color,
-          }}
-        />
+      {/* Progress bar with pace indicator */}
+      <div className="mt-4 space-y-1">
+        <div className="relative bg-slate-700 rounded-full h-3 overflow-visible">
+          {/* Fill */}
+          <div
+            className="h-full rounded-full transition-all duration-700"
+            style={{
+              width: `${Math.min(goal.progress, 100)}%`,
+              background: done ? '#22c55e' : isBehind ? '#f59e0b' : goal.card_color,
+            }}
+          />
+          {/* Pace marker */}
+          {paceInfo && pacePct > 0 && pacePct < 100 && (
+            <div
+              className="absolute top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-white/70"
+              style={{ left: `${pacePct}%` }}
+              title={`קצב נדרש: ${Math.round(pacePct)}%`}
+            />
+          )}
+        </div>
+        {/* Pace status */}
+        {paceInfo && !done && (
+          <div className={`flex items-center gap-1 text-xs ${isBehind ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {isBehind
+              ? <><TrendingDown size={11} /> מאחור בקצב ({Math.round(pacePct - goal.progress)}% פיגור)</>
+              : isAhead
+              ? <><TrendingUp size={11} /> לפני הקצב</>
+              : <><Minus size={11} /> בקצב טוב</>}
+          </div>
+        )}
       </div>
 
       {/* Footer */}
