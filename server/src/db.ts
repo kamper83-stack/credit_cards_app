@@ -19,7 +19,14 @@ db.exec(`
     color TEXT DEFAULT '#6366f1',
     icon TEXT,
     credentials TEXT,
+    source TEXT NOT NULL DEFAULT 'manual',
+    riseup_account_id TEXT,
     created_at INTEGER DEFAULT (unixepoch())
+  );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
   );
 
   CREATE TABLE IF NOT EXISTS goals (
@@ -59,6 +66,20 @@ db.exec(`
     message TEXT,
     synced_at INTEGER DEFAULT (unixepoch())
   );
+`);
+
+const cardColumns = db.prepare(`PRAGMA table_info(cards)`).all() as Array<{ name: string }>;
+const cardColumnNames = new Set(cardColumns.map(c => c.name));
+if (!cardColumnNames.has('source')) {
+  db.exec(`ALTER TABLE cards ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'`);
+}
+if (!cardColumnNames.has('riseup_account_id')) {
+  db.exec(`ALTER TABLE cards ADD COLUMN riseup_account_id TEXT`);
+}
+
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_riseup_account
+    ON cards(riseup_account_id) WHERE riseup_account_id IS NOT NULL;
 `);
 
 export default db;

@@ -2,6 +2,8 @@ export interface Card {
   id: string;
   name: string;
   provider: string;
+  source: 'manual' | 'riseup';
+  riseup_account_id?: string;
   last4?: string;
   color: string;
   goals_count: number;
@@ -46,8 +48,15 @@ export interface Transaction {
   card_color: string;
 }
 
-export interface Provider {
-  id: string;
-  name: string;
-  fields: Array<{ key: string; label: string; type: string }>;
+export interface RiseupStatus {
+  connected: boolean;
+  tokenPreview: string | null;
+  lastSyncedAt: number | null;
+}
+
+export interface RiseupSyncResult {
+  success: boolean;
+  accountsFound: number;
+  transactionsSynced: number;
+  monthsSynced: string[];
 }
