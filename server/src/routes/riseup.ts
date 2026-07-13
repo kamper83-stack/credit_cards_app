@@ -64,7 +64,7 @@ router.post('/sync', async (req, res) => {
     const upsertCard = db.prepare(`
       INSERT INTO cards (id, name, provider, color, source, riseup_account_id)
       VALUES (?, ?, 'riseup', '#6366f1', 'riseup', ?)
-      ON CONFLICT(riseup_account_id) DO UPDATE SET name = excluded.name
+      ON CONFLICT(riseup_account_id) WHERE riseup_account_id IS NOT NULL DO UPDATE SET name = excluded.name
     `);
     const getCardBySource = db.prepare(`SELECT id FROM cards WHERE riseup_account_id = ?`);
 
