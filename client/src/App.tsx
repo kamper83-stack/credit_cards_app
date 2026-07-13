@@ -1,13 +1,15 @@
 import { Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { LayoutDashboard, CreditCard, ArrowLeftRight, Trophy } from 'lucide-react';
+import { LayoutDashboard, CreditCard, ArrowLeftRight, Trophy, Settings as SettingsIcon } from 'lucide-react';
 import { Dashboard } from './pages/Dashboard';
 import { Cards } from './pages/Cards';
 import { Transactions } from './pages/Transactions';
+import { Settings } from './pages/Settings';
 
 const nav = [
   { to: '/', label: 'סקירה כללית', icon: LayoutDashboard, exact: true },
   { to: '/cards', label: 'כרטיסים', icon: CreditCard },
   { to: '/transactions', label: 'עסקאות', icon: ArrowLeftRight },
+  { to: '/settings', label: 'הגדרות', icon: SettingsIcon },
 ];
 
 export default function App() {
@@ -46,6 +48,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/cards" element={<Cards />} />
           <Route path="/transactions" element={<Transactions />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
