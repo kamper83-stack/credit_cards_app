@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import db from '../db.js';
 import { z } from 'zod';
-import { isValidPatFormat, testRiseupConnection, fetchRiseupCreditCardData } from '../riseup.js';
+import { isValidPatFormat, testRiseupConnection, fetchRiseupCreditCardData, accountKey } from '../riseup.js';
 
 const router = Router();
 
@@ -87,7 +87,7 @@ router.post('/sync', async (req, res) => {
 
     const syncTransactions = db.transaction((txns: typeof transactions) => {
       for (const t of txns) {
-        const cardId = cardIdBySource.get(t.source);
+        const cardId = cardIdBySource.get(accountKey(t));
         if (!cardId) continue;
         insertTx.run(
           t.transactionId,
