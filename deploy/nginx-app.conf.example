@@ -1,0 +1,22 @@
+# Copy to /etc/nginx/sites-available/rewards-app, edit <TAILSCALE_IP> and
+# <APP_PATH>, then: ln -s /etc/nginx/sites-available/rewards-app /etc/nginx/sites-enabled/
+#
+# Listening only on the Tailscale interface IP (not 0.0.0.0) means this
+# vhost never binds to the VPS's public interface at all.
+server {
+    listen <TAILSCALE_IP>:80;
+    server_name _;
+
+    root <APP_PATH>/client/dist;
+    index index.html;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3001/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location / {
+        try_files $uri /index.html;
+    }
+}

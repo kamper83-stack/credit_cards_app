@@ -16,7 +16,8 @@ export interface RiseupTransaction {
   amount: number;
   accountNickname: string | null;
   sourceType: string; // "creditCard" | "checkingAccount" | ...
-  source: string; // stable account identifier
+  source: string; // provider identifier, e.g. "isracard" - NOT unique per account
+  accountNumberHash?: string; // stable per-account hash; distinguishes multiple cards from the same provider
   categoryLabel: string;
   isInstallment: boolean;
   installmentNumber?: number;
@@ -97,6 +98,17 @@ function mapRiseupError(rawMessage: string): string {
   return `שגיאה מ-RiseUp: ${rawMessage}`;
 }
 
+/**
+ * Per-account grouping key. `source` alone only identifies the provider
+ * (e.g. "isracard"), not the specific card - two cards from the same
+ * issuer would collapse into one. `accountNumberHash` (shipped in
+ * @riseup-oss/mcp v0.3.0, see riseup-oss/mcp#5) is the stable per-account
+ * hash; fall back to `source` for older server versions.
+ */
+export function accountKey(t: RiseupTransaction): string {
+  return t.accountNumberHash || t.source;
+}
+
 /** Verifies the PAT actually works by requesting the current month once. */
 export async function testRiseupConnection(pat: string): Promise<void> {
   await withRiseupClient(pat, client => callGetTransactions(client, currentCashflowMonth()));
@@ -120,8 +132,12 @@ export async function fetchRiseupCreditCardData(pat: string, months = 3): Promis
 
   const accountsMap = new Map<string, RiseupAccount>();
   for (const t of creditCardTxns) {
-    if (!accountsMap.has(t.source)) {
-      accountsMap.set(t.source, { sourceId: t.source, nickname: t.accountNickname || t.source });
+    const key = accountKey(t);
+    if (!accountsMap.has(key)) {
+      // When no nickname is set and the key isn't just the bare provider name,
+      // append a short suffix so multiple same-provider cards stay visually distinct.
+      const fallback = key !== t.source ? `${t.source} (${key.slice(-4)})` : t.source;
+      accountsMap.set(key, { sourceId: key, nickname: t.accountNickname || fallback });
     }
   }
 

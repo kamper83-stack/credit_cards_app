@@ -8,6 +8,7 @@ import riseupRouter from './routes/riseup.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const HOST = process.env.HOST || '0.0.0.0';
 
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' }));
 app.use(express.json());
@@ -19,6 +20,6 @@ app.use('/api/riseup', riseupRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+app.listen(Number(PORT), HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
 });
