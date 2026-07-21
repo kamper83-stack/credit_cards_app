@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@riseup-oss/mcp": "^0.2.0",
+    "@riseup-oss/mcp": "^0.3.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

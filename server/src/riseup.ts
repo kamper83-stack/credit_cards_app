@@ -101,9 +101,9 @@ function mapRiseupError(rawMessage: string): string {
 /**
  * Per-account grouping key. `source` alone only identifies the provider
  * (e.g. "isracard"), not the specific card - two cards from the same
- * issuer would collapse into one. Prefer `accountNumberHash` (a stable
- * per-account hash) once RiseUp exposes it; fall back to `source` until then.
- * See https://github.com/riseup-oss/mcp/issues/5
+ * issuer would collapse into one. `accountNumberHash` (shipped in
+ * @riseup-oss/mcp v0.3.0, see riseup-oss/mcp#5) is the stable per-account
+ * hash; fall back to `source` for older server versions.
  */
 export function accountKey(t: RiseupTransaction): string {
   return t.accountNumberHash || t.source;
