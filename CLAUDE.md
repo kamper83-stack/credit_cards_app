@@ -67,4 +67,4 @@ Two deployment targets exist side by side, documented in [deploy/DEPLOY.md](depl
 
 - The RiseUp PAT is stored in plaintext in the `settings` table (local SQLite only) and is read-only, 30-day-expiring by design on RiseUp's side.
 - `GET /api/cards` explicitly strips the `credentials` column from responses (`{ ...c, credentials: undefined }`) — preserve this if that query changes.
-- PAT format is validated client- and server-side against `/^riseup_pat_[A-Za-z0-9_-]{20,}$/` before use.
+- PAT format is validated server-side only, against `/^riseup_pat_[A-Za-z0-9_-]{20,}$/` (`isValidPatFormat` in `server/src/riseup.ts`) before use. The client (`Settings.tsx`) has no matching check - a malformed token round-trips to the server before being rejected.
