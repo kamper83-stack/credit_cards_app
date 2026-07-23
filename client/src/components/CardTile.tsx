@@ -7,6 +7,7 @@ interface Props {
   card: Card;
   onDelete: () => void;
   onEdit: () => void;
+  onClick?: () => void;
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -14,9 +15,10 @@ const PROVIDER_LABELS: Record<string, string> = {
   manual: 'ידני',
 };
 
-export function CardTile({ card, onDelete, onEdit }: Props) {
+export function CardTile({ card, onDelete, onEdit, onClick }: Props) {
   return (
     <div
+      onClick={onClick}
       className="relative rounded-2xl p-5 overflow-hidden border border-slate-700 hover:border-slate-500 transition-all cursor-pointer group"
       style={{ background: `linear-gradient(135deg, ${card.color}22, ${card.color}08)` }}
     >

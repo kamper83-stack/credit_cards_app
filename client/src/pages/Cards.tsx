@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, CreditCard, RefreshCw, Link2 } from 'lucide-react';
 import { cardsApi, riseupApi } from '../api';
@@ -8,6 +8,7 @@ import { AddCardModal } from '../components/AddCardModal';
 
 export function Cards() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [showAdd, setShowAdd] = useState(false);
   const [syncMsg, setSyncMsg] = useState<{ msg: string; ok: boolean } | null>(null);
 
@@ -85,6 +86,7 @@ export function Cards() {
             <CardTile
               key={c.id}
               card={c}
+              onClick={() => navigate(`/transactions?card_id=${c.id}`)}
               onDelete={() => { if (confirm(`למחוק את ${c.name}?`)) deleteCard.mutate(c.id); }}
               onEdit={() => { /* TODO: edit modal */ }}
             />

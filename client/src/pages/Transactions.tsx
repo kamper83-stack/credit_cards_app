@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, X } from 'lucide-react';
 import { cardsApi, transactionsApi } from '../api';
 import { AddTransactionModal } from '../components/AddTransactionModal';
 import type { Transaction } from '../types';
@@ -14,9 +15,16 @@ function fmt(n: number) {
 export function Transactions() {
   const qc = useQueryClient();
   const [showAdd, setShowAdd] = useState(false);
-  const [filterCard, setFilterCard] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filterCard = searchParams.get('card_id') || '';
+
+  const setFilterCard = (cardId: string) => {
+    if (cardId) setSearchParams({ card_id: cardId });
+    else setSearchParams({});
+  };
 
   const { data: cards = [] } = useQuery({ queryKey: ['cards'], queryFn: cardsApi.list });
+  const filteredCardName = cards.find((c: any) => c.id === filterCard)?.name;
   const { data: transactions = [], isLoading } = useQuery({
     queryKey: ['transactions', filterCard],
     queryFn: () => transactionsApi.list({ card_id: filterCard || undefined, limit: 200 }),
@@ -42,7 +50,17 @@ export function Transactions() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
-        <h1 className="text-xl font-bold text-white">עסקאות</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-bold text-white">עסקאות</h1>
+          {filterCard && filteredCardName && (
+            <span className="flex items-center gap-1.5 bg-indigo-900/50 border border-indigo-700 text-indigo-300 text-xs px-2.5 py-1 rounded-full">
+              {filteredCardName}
+              <button onClick={() => setFilterCard('')} className="hover:text-white transition-colors">
+                <X size={12} />
+              </button>
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-3">
           <select
             value={filterCard} onChange={e => setFilterCard(e.target.value)}
