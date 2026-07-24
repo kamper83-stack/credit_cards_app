@@ -5,11 +5,13 @@ import { Plus, CreditCard, RefreshCw, Link2 } from 'lucide-react';
 import { cardsApi, riseupApi } from '../api';
 import { CardTile } from '../components/CardTile';
 import { AddCardModal } from '../components/AddCardModal';
+import { RenameCardModal } from '../components/RenameCardModal';
 
 export function Cards() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [showAdd, setShowAdd] = useState(false);
+  const [editingCard, setEditingCard] = useState<any>(null);
   const [syncMsg, setSyncMsg] = useState<{ msg: string; ok: boolean } | null>(null);
 
   const { data: cards = [], isLoading } = useQuery({ queryKey: ['cards'], queryFn: cardsApi.list });
@@ -23,6 +25,11 @@ export function Cards() {
   const deleteCard = useMutation({
     mutationFn: cardsApi.delete,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['cards'] }),
+  });
+
+  const renameCard = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => cardsApi.update(id, { name }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cards'] }); setEditingCard(null); },
   });
 
   const sync = useMutation({
@@ -88,7 +95,7 @@ export function Cards() {
               card={c}
               onClick={() => navigate(`/transactions?card_id=${c.id}`)}
               onDelete={() => { if (confirm(`למחוק את ${c.name}?`)) deleteCard.mutate(c.id); }}
-              onEdit={() => { /* TODO: edit modal */ }}
+              onEdit={() => setEditingCard(c)}
             />
           ))}
         </div>
@@ -98,6 +105,14 @@ export function Cards() {
         <AddCardModal
           onClose={() => setShowAdd(false)}
           onSave={data => addCard.mutate(data)}
+        />
+      )}
+
+      {editingCard && (
+        <RenameCardModal
+          card={editingCard}
+          onClose={() => setEditingCard(null)}
+          onSave={name => renameCard.mutate({ id: editingCard.id, name })}
         />
       )}
     </div>
