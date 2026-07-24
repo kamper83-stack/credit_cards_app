@@ -86,50 +86,80 @@ export function Transactions() {
           <p className="text-sm mt-1">סנכרן כרטיס אשראי או הוסף עסקה ידנית</p>
         </div>
       ) : (
-        <div className="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-slate-700">
-                  <th className="text-right px-4 py-3 text-xs text-slate-400 font-medium">תאריך</th>
-                  <th className="text-right px-4 py-3 text-xs text-slate-400 font-medium">תיאור</th>
-                  <th className="text-right px-4 py-3 text-xs text-slate-400 font-medium">כרטיס</th>
-                  <th className="text-right px-4 py-3 text-xs text-slate-400 font-medium">קטגוריה</th>
-                  <th className="text-left px-4 py-3 text-xs text-slate-400 font-medium">סכום</th>
-                  <th className="px-4 py-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((t: Transaction) => (
-                  <tr key={t.id} className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
-                    <td className="px-4 py-3 text-sm text-slate-300 whitespace-nowrap">
-                      {format(new Date(t.date), 'dd/MM/yyyy')}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-white max-w-[200px] truncate">{t.description}</td>
-                    <td className="px-4 py-3">
-                      <span className="flex items-center gap-1.5 text-xs text-slate-300">
-                        <span className="w-2 h-2 rounded-full" style={{ background: t.card_color }} />
-                        {t.card_name}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">{t.category || '-'}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-white text-left whitespace-nowrap">
-                      {fmt(t.amount)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <button
-                        onClick={() => deleteTx.mutate(t.id)}
-                        className="text-slate-600 hover:text-red-400 transition-colors"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </td>
+        <>
+          <div className="hidden sm:block bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-slate-700">
+                    <th className="text-right px-4 py-3 text-xs text-slate-400 font-medium">תאריך</th>
+                    <th className="text-right px-4 py-3 text-xs text-slate-400 font-medium">תיאור</th>
+                    <th className="text-right px-4 py-3 text-xs text-slate-400 font-medium">כרטיס</th>
+                    <th className="text-right px-4 py-3 text-xs text-slate-400 font-medium">קטגוריה</th>
+                    <th className="text-left px-4 py-3 text-xs text-slate-400 font-medium">סכום</th>
+                    <th className="px-4 py-3"></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {transactions.map((t: Transaction) => (
+                    <tr key={t.id} className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
+                      <td className="px-4 py-3 text-sm text-slate-300 whitespace-nowrap">
+                        {format(new Date(t.date), 'dd/MM/yyyy')}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-white max-w-[200px] truncate">{t.description}</td>
+                      <td className="px-4 py-3">
+                        <span className="flex items-center gap-1.5 text-xs text-slate-300">
+                          <span className="w-2 h-2 rounded-full" style={{ background: t.card_color }} />
+                          {t.card_name}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-400">{t.category || '-'}</td>
+                      <td className="px-4 py-3 text-sm font-medium text-white text-left whitespace-nowrap">
+                        {fmt(t.amount)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => deleteTx.mutate(t.id)}
+                          className="text-slate-600 hover:text-red-400 transition-colors"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+
+          <div className="sm:hidden space-y-3">
+            {transactions.map((t: Transaction) => (
+              <div key={t.id} className="bg-slate-800 rounded-2xl border border-slate-700 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-white truncate">{t.description}</p>
+                    <span className="flex items-center gap-1.5 text-xs text-slate-400 mt-1">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: t.card_color }} />
+                      <span className="truncate">{t.card_name}</span>
+                    </span>
+                  </div>
+                  <span className="text-sm font-medium text-white whitespace-nowrap">{fmt(t.amount)}</span>
+                </div>
+                <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-700/50">
+                  <span className="text-xs text-slate-500">
+                    {format(new Date(t.date), 'dd/MM/yyyy')}{t.category ? ` · ${t.category}` : ''}
+                  </span>
+                  <button
+                    onClick={() => deleteTx.mutate(t.id)}
+                    className="text-slate-600 hover:text-red-400 transition-colors"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       {showAdd && (
