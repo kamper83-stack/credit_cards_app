@@ -13,6 +13,7 @@ function fmt(n: number) {
 export function Dashboard() {
   const qc = useQueryClient();
   const [showAddGoal, setShowAddGoal] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const { data: cards = [] } = useQuery({ queryKey: ['cards'], queryFn: cardsApi.list });
   const { data: goals = [], isLoading } = useQuery({ queryKey: ['goals'], queryFn: () => goalsApi.list() });
@@ -20,11 +21,13 @@ export function Dashboard() {
   const deleteGoal = useMutation({
     mutationFn: goalsApi.delete,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['goals'] }),
+    onError: () => setError('מחיקת היעד נכשלה'),
   });
 
   const addGoal = useMutation({
     mutationFn: goalsApi.create,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['goals'] }); setShowAddGoal(false); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['goals'] }); setShowAddGoal(false); setError(null); },
+    onError: (e: any) => setError(e.response?.data?.error ? `שגיאה: ${JSON.stringify(e.response.data.error)}` : 'הוספת היעד נכשלה'),
   });
 
   const activeGoals = goals.filter((g: Goal) => g.active);
@@ -33,15 +36,33 @@ export function Dashboard() {
   const total_spent = activeGoals.reduce((s: number, g: Goal) => s + g.spent, 0);
   const total_target = activeGoals.reduce((s: number, g: Goal) => s + g.target_amount, 0);
   const total_rewards = completed.reduce((s: number, g: Goal) => s + (g.reward_value || 0), 0);
+  const overall_progress = total_target > 0 ? Math.round((total_spent / total_target) * 100) : 0;
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="rounded-xl px-4 py-3 text-sm bg-red-900/50 text-red-400 border border-red-700">
+          {error}
+        </div>
+      )}
+
       {/* Summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-slate-800 rounded-2xl p-4 border border-slate-700">
           <div className="text-slate-400 text-sm mb-1">סה"כ הוצאות (יעדים פעילים)</div>
           <div className="text-2xl font-bold text-white">{fmt(total_spent)}</div>
-          <div className="text-xs text-slate-500 mt-1">מתוך {fmt(total_target)}</div>
+          <div className="text-xs text-slate-500 mt-1 flex items-center gap-2">
+            <span>מתוך {fmt(total_target)}</span>
+            <span className="bg-slate-700 text-indigo-300 px-1.5 py-0.5 rounded-full text-[10px] font-semibold">
+              {overall_progress}%
+            </span>
+          </div>
+          <div className="mt-2 bg-slate-700 rounded-full h-1.5 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-700"
+              style={{ width: `${Math.min(overall_progress, 100)}%`, background: overall_progress >= 100 ? '#22c55e' : '#6366f1' }}
+            />
+          </div>
         </div>
         <div className="bg-slate-800 rounded-2xl p-4 border border-slate-700">
           <div className="text-slate-400 text-sm mb-1 flex items-center gap-1"><Trophy size={14} /> יעדים שהושגו</div>

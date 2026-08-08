@@ -15,7 +15,11 @@ const TxSchema = z.object({
 });
 
 router.get('/', (req, res) => {
-  const { card_id, from, to, limit = '50' } = req.query as Record<string, string>;
+  const { card_id, from, to } = req.query as Record<string, string>;
+  // Clamp limit to a sane range — NaN/negative/garbage input must not
+  // reach SQLite (LIMIT NaN throws and 500s the endpoint).
+  const rawLimit = Number((req.query.limit as string) ?? 50);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), 1000) : 50;
 
   let where = 'WHERE 1=1';
   const args: any[] = [];
@@ -30,7 +34,7 @@ router.get('/', (req, res) => {
     ${where}
     ORDER BY t.date DESC
     LIMIT ?
-  `).all(...args, parseInt(limit, 10));
+  `).all(...args, limit);
 
   res.json(rows);
 });

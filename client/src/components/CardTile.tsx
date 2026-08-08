@@ -43,16 +43,18 @@ export function CardTile({ card, onDelete, onEdit, onClick }: Props) {
           </div>
         </div>
 
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
           <button
             onClick={e => { e.stopPropagation(); onEdit(); }}
             className="p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-white transition-all"
+            title="ערוך כרטיס"
           >
             <Settings size={14} />
           </button>
           <button
             onClick={e => { e.stopPropagation(); onDelete(); }}
             className="p-1.5 rounded-lg hover:bg-red-900/50 text-slate-400 hover:text-red-400 transition-all"
+            title="מחק כרטיס"
           >
             <Trash2 size={14} />
           </button>

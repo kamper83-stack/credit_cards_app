@@ -19,19 +19,26 @@ const GoalSchema = z.object({
 
 function getPeriodDates(periodType: string, start?: string, end?: string) {
   const now = new Date();
+  // Format a Date using LOCAL calendar fields (YYYY-MM-DD).
+  // Do NOT use toISOString() here — it converts to UTC, which shifts the
+  // date back one day in positive-offset timezones (e.g. Asia/Jerusalem)
+  // and makes transactions on the 1st of the month fall outside the window.
+  const localDate = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
   if (periodType === 'custom' && start && end) {
     return { start, end };
   }
   if (periodType === 'monthly') {
     const s = new Date(now.getFullYear(), now.getMonth(), 1);
     const e = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    return { start: s.toISOString().split('T')[0], end: e.toISOString().split('T')[0] };
+    return { start: localDate(s), end: localDate(e) };
   }
   if (periodType === 'quarterly') {
     const q = Math.floor(now.getMonth() / 3);
     const s = new Date(now.getFullYear(), q * 3, 1);
     const e = new Date(now.getFullYear(), q * 3 + 3, 0);
-    return { start: s.toISOString().split('T')[0], end: e.toISOString().split('T')[0] };
+    return { start: localDate(s), end: localDate(e) };
   }
   if (periodType === 'yearly') {
     return {

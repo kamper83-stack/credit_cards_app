@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, X } from 'lucide-react';
+import { Plus, Trash2, X, CalendarDays } from 'lucide-react';
 import { cardsApi, transactionsApi } from '../api';
 import { AddTransactionModal } from '../components/AddTransactionModal';
 import type { Transaction } from '../types';
@@ -12,23 +12,74 @@ function fmt(n: number) {
   return n.toLocaleString('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 2 });
 }
 
+/** Build [firstDay, lastDay] of a YYYY-MM month in LOCAL time (no UTC shift). */
+function monthRange(month: string): [string, string] {
+  const [y, m] = month.split('-').map(Number);
+  if (!y || !m) {
+    const now = new Date();
+    return [`${now.getFullYear()}-01-01`, `${now.getFullYear()}-12-31`];
+  }
+  const first = new Date(y, m - 1, 1);
+  const last = new Date(y, m, 0);
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return [iso(first), iso(last)];
+}
+
+/** Last N months as YYYY-MM strings, oldest first (local time). */
+function recentMonths(n: number): string[] {
+  const out: string[] = [];
+  const now = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return out;
+}
+
 export function Transactions() {
   const qc = useQueryClient();
   const [showAdd, setShowAdd] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const filterCard = searchParams.get('card_id') || '';
+  const monthParam = searchParams.get('month') || '';
 
   const setFilterCard = (cardId: string) => {
-    if (cardId) setSearchParams({ card_id: cardId });
-    else setSearchParams({});
+    if (cardId) setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set('card_id', cardId);
+      return next;
+    });
+    else setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.delete('card_id');
+      return next;
+    });
   };
+
+  const setMonth = (month: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (month) next.set('month', month);
+      else next.delete('month');
+      return next;
+    });
+  };
+
+  // Default to current month filter (local timezone, avoids UTC off-by-one)
+  const today = new Date();
+  const defaultMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+  const month = monthParam || defaultMonth;
+  const [from, to] = monthRange(month);
 
   const { data: cards = [] } = useQuery({ queryKey: ['cards'], queryFn: cardsApi.list });
   const filteredCardName = cards.find((c: any) => c.id === filterCard)?.name;
   const { data: transactions = [], isLoading } = useQuery({
-    queryKey: ['transactions', filterCard],
-    queryFn: () => transactionsApi.list({ card_id: filterCard || undefined, limit: 200 }),
+    queryKey: ['transactions', filterCard, month],
+    queryFn: () => transactionsApi.list({ card_id: filterCard || undefined, from, to, limit: 500 }),
   });
+
+  const totalAmount = transactions.reduce((s: number, t: Transaction) => s + t.amount, 0);
 
   const addTx = useMutation({
     mutationFn: transactionsApi.create,
@@ -37,6 +88,7 @@ export function Transactions() {
       qc.invalidateQueries({ queryKey: ['goals'] });
       setShowAdd(false);
     },
+    onError: () => setError('הוספת העסקה נכשלה'),
   });
 
   const deleteTx = useMutation({
@@ -45,10 +97,17 @@ export function Transactions() {
       qc.invalidateQueries({ queryKey: ['transactions'] });
       qc.invalidateQueries({ queryKey: ['goals'] });
     },
+    onError: () => setError('מחיקת העסקה נכשלה'),
   });
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="rounded-xl px-4 py-3 text-sm bg-red-900/50 text-red-400 border border-red-700">
+          {error}
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-white">עסקאות</h1>
@@ -61,13 +120,23 @@ export function Transactions() {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <select
             value={filterCard} onChange={e => setFilterCard(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded-xl px-3 py-2 text-white text-sm focus:border-indigo-500 focus:outline-none"
           >
             <option value="">כל הכרטיסים</option>
             {cards.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <select
+            value={month} onChange={e => setMonth(e.target.value)}
+            className="bg-slate-800 border border-slate-600 rounded-xl px-3 py-2 text-white text-sm focus:border-indigo-500 focus:outline-none"
+          >
+            {recentMonths(12).map(m => (
+              <option key={m} value={m}>
+                {format(new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1, 1), 'MMMM yyyy', { locale: he })}
+              </option>
+            ))}
           </select>
           <button
             onClick={() => setShowAdd(true)}
@@ -77,6 +146,16 @@ export function Transactions() {
           </button>
         </div>
       </div>
+
+      {/* Month summary */}
+      {!isLoading && transactions.length > 0 && (
+        <div className="flex items-center gap-2 text-sm bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-3">
+          <CalendarDays size={15} className="text-slate-400" />
+          <span className="text-slate-400">סה"כ בחודש:</span>
+          <span className="font-bold text-white">{fmt(totalAmount)}</span>
+          <span className="text-slate-500">· {transactions.length} עסקאות</span>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="text-center py-12 text-slate-400">טוען...</div>

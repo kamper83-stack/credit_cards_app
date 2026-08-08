@@ -5,24 +5,35 @@ import { Plus, CreditCard, RefreshCw, Link2 } from 'lucide-react';
 import { cardsApi, riseupApi } from '../api';
 import { CardTile } from '../components/CardTile';
 import { AddCardModal } from '../components/AddCardModal';
+import { EditCardModal } from '../components/EditCardModal';
 
 export function Cards() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [showAdd, setShowAdd] = useState(false);
+  const [editingCard, setEditingCard] = useState<any | null>(null);
   const [syncMsg, setSyncMsg] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const { data: cards = [], isLoading } = useQuery({ queryKey: ['cards'], queryFn: cardsApi.list });
   const { data: riseupStatus } = useQuery({ queryKey: ['riseup-status'], queryFn: riseupApi.status });
 
   const addCard = useMutation({
     mutationFn: cardsApi.create,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cards'] }); setShowAdd(false); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cards'] }); setShowAdd(false); setFormError(null); },
+    onError: (e: any) => setFormError(e.response?.data?.error ? `שגיאה: ${JSON.stringify(e.response.data.error)}` : 'הוספת הכרטיס נכשלה'),
   });
 
   const deleteCard = useMutation({
     mutationFn: cardsApi.delete,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['cards'] }),
+    onError: () => setFormError('מחיקת הכרטיס נכשלה'),
+  });
+
+  const updateCard = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: any }) => cardsApi.update(id, data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cards'] }); setEditingCard(null); },
+    onError: () => setFormError('עדכון הכרטיס נכשל'),
   });
 
   const sync = useMutation({
@@ -72,6 +83,12 @@ export function Cards() {
         </div>
       )}
 
+      {formError && (
+        <div className="rounded-xl px-4 py-3 text-sm bg-red-900/50 text-red-400 border border-red-700">
+          {formError}
+        </div>
+      )}
+
       {isLoading ? (
         <div className="text-center py-12 text-slate-400">טוען...</div>
       ) : cards.length === 0 ? (
@@ -88,7 +105,7 @@ export function Cards() {
               card={c}
               onClick={() => navigate(`/transactions?card_id=${c.id}`)}
               onDelete={() => { if (confirm(`למחוק את ${c.name}?`)) deleteCard.mutate(c.id); }}
-              onEdit={() => { /* TODO: edit modal */ }}
+              onEdit={() => setEditingCard(c)}
             />
           ))}
         </div>
@@ -98,6 +115,14 @@ export function Cards() {
         <AddCardModal
           onClose={() => setShowAdd(false)}
           onSave={data => addCard.mutate(data)}
+        />
+      )}
+
+      {editingCard && (
+        <EditCardModal
+          card={editingCard}
+          onClose={() => setEditingCard(null)}
+          onSave={data => updateCard.mutate({ id: editingCard.id, data })}
         />
       )}
     </div>
