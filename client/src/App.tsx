@@ -4,6 +4,7 @@ import { Dashboard } from './pages/Dashboard';
 import { Cards } from './pages/Cards';
 import { Transactions } from './pages/Transactions';
 import { Settings } from './pages/Settings';
+import { AutoSync } from './components/AutoSync';
 
 const nav = [
   { to: '/', label: 'סקירה כללית', icon: LayoutDashboard, exact: true },
@@ -15,6 +16,7 @@ const nav = [
 export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
+      <AutoSync />
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-sm sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">

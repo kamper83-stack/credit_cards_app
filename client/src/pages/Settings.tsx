@@ -31,7 +31,7 @@ export function Settings() {
   const sync = useMutation({
     mutationFn: () => riseupApi.sync(3),
     onSuccess: (r) => {
-      setSyncResult(`נמצאו ${r.accountsFound} כרטיסים, סונכרנו ${r.transactionsSynced} עסקאות (${r.monthsSynced.length} חודשים אחרונים)`);
+      setSyncResult(`נמצאו ${r.accountsFound ?? 0} כרטיסים, סונכרנו ${r.transactionsSynced ?? 0} עסקאות (${r.monthsSynced?.length ?? 0} חודשים אחרונים)`);
       setError(null);
       qc.invalidateQueries({ queryKey: ['cards'] });
       qc.invalidateQueries({ queryKey: ['goals'] });

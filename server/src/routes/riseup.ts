@@ -51,11 +51,27 @@ router.delete('/token', (_req, res) => {
   res.json({ success: true });
 });
 
+// Minimum interval between automatic (non-forced) syncs, in seconds (24h).
+const AUTO_SYNC_INTERVAL_SEC = 24 * 60 * 60;
+
 router.post('/sync', async (req, res) => {
   const pat = getPat();
   if (!pat) return res.status(400).json({ error: 'לא מחובר ל-RiseUp. הזן טוקן גישה בהגדרות.' });
 
   const months = Math.min(Math.max(Number(req.body?.months) || 3, 1), 24);
+  const force = req.body?.force === true;
+
+  // Daily throttle for automatic on-load syncs. A manual button press always passes force=true.
+  if (!force) {
+    const lastRow = db.prepare(`SELECT value FROM settings WHERE key = 'riseup_last_sync'`).get() as { value?: string } | undefined;
+    if (lastRow?.value) {
+      const last = Number(lastRow.value);
+      const now = Math.floor(Date.now() / 1000);
+      if (Number.isFinite(last) && now - last < AUTO_SYNC_INTERVAL_SEC) {
+        return res.json({ success: true, skipped: true, reason: 'already_synced', lastSyncedAt: last });
+      }
+    }
+  }
 
   try {
     const { accounts, transactions, monthsSynced } = await fetchRiseupCreditCardData(pat, months);

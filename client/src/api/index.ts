@@ -30,5 +30,5 @@ export const riseupApi = {
   status: () => api.get<RiseupStatus>('/riseup/status').then(r => r.data),
   connect: (token: string) => api.put('/riseup/token', { token }).then(r => r.data),
   disconnect: () => api.delete('/riseup/token').then(r => r.data),
-  sync: (months?: number) => api.post<RiseupSyncResult>('/riseup/sync', { months }).then(r => r.data),
+  sync: (months?: number, force = true) => api.post<RiseupSyncResult>('/riseup/sync', { months, force }).then(r => r.data),
 };

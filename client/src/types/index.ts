@@ -56,7 +56,10 @@ export interface RiseupStatus {
 
 export interface RiseupSyncResult {
   success: boolean;
-  accountsFound: number;
-  transactionsSynced: number;
-  monthsSynced: string[];
+  skipped?: boolean;
+  reason?: string;
+  lastSyncedAt?: number;
+  accountsFound?: number;
+  transactionsSynced?: number;
+  monthsSynced?: string[];
 }
