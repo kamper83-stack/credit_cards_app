@@ -74,7 +74,7 @@ router.get('/', (req, res) => {
       const row: any = db.prepare(`
         SELECT COALESCE(SUM(amount), 0) as total
         FROM transactions
-        WHERE card_id = ? AND date >= ? AND date <= ? AND type != 'installments'
+        WHERE card_id = ? AND date >= ? AND date <= ?
       `).get(goal.card_id, start, end);
       spent = row.total;
     }
