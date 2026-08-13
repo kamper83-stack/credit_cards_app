@@ -9,6 +9,7 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - HOST=0.0.0.0
+      - TZ=Asia/Jerusalem
     volumes:
       - ./data:/app/data
     healthcheck:

@@ -10,7 +10,8 @@ interface Props {
 }
 
 export function AddTransactionModal({ cards, preselectedCardId, onClose, onSave }: Props) {
-  const today = new Date().toISOString().split('T')[0];
+  // Local (Asia/Jerusalem in the browser) date — NOT toISOString() which would give yesterday's UTC date before 03:00.
+  const today = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
   const [cardId, setCardId] = useState(preselectedCardId || (cards[0]?.id ?? ''));
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(today);
