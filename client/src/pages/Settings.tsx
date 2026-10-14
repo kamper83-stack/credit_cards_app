@@ -24,7 +24,7 @@ export function Settings() {
       setError(null);
       qc.invalidateQueries({ queryKey: ['riseup-status'] });
     },
-    onError: (e: unknown) => setError(riseupErrorMessage(e, 'החיבור נכשל')),
+    onError: (e: unknown) => setError(riseupErrorMessage(e, 'החיבור נכשל', 'connect')),
   });
 
   const disconnect = useMutation({
@@ -109,13 +109,18 @@ export function Settings() {
             onSubmit={e => { e.preventDefault(); connect.mutate(); }}
             className="space-y-3"
           >
-            <input
-              required
-              dir="ltr"
+            <PasswordField
+              id="riseup-token"
+              label="טוקן גישה אישי (PAT)"
+              autoComplete="off"
               value={token}
-              onChange={e => setToken(e.target.value)}
+              onChange={setToken}
               placeholder="riseup_pat_..."
-              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none font-mono text-sm"
+              required
+              aria-required="true"
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
             />
             <button
               type="submit"

@@ -23,16 +23,30 @@ server {
         # Overwrite (never pass through) X-Forwarded-Host with the Host the client sent, port included;
         # the app's CSRF check treats it as an additional own host when the peer is a trusted proxy.
         proxy_set_header X-Forwarded-Host $http_host;
+        # Per-user data must not be cached anywhere. The app already sends no-store; hide the
+        # upstream copy and set it here so the header appears exactly once (also on errors).
+        proxy_hide_header Cache-Control;
+        proxy_hide_header Pragma;
+        add_header Cache-Control "no-store" always;
+        add_header Pragma "no-cache" always;
+        include <APP_PATH>/deploy/nginx-security-headers.conf;
     }
 
-    # The statically served HTML bypasses Express, so send the security headers here.
-    # Keep the CSP identical to server/src/app.ts. Add HSTS only if you serve HTTPS.
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "no-referrer" always;
-    # add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
+    # Content-hashed build output: cache for a year.
+    location /assets/ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        include <APP_PATH>/deploy/nginx-security-headers.conf;
+    }
 
+    # The statically served HTML bypasses Express, so send the security headers here (shared snippet;
+    # repeated in each location below because nginx drops inherited add_header when a location sets its own).
+    include <APP_PATH>/deploy/nginx-security-headers.conf;
+
+    # index.html (and the SPA fallback) must be revalidated on every load so a deploy is picked up.
     location / {
         try_files $uri /index.html;
+        add_header Cache-Control "no-cache" always;
+        include <APP_PATH>/deploy/nginx-security-headers.conf;
     }
 }

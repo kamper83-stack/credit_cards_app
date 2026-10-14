@@ -58,6 +58,8 @@ export interface AppOptions extends AuthOptions {
    * the JSON 404). Used by tests to prove that arbitrary route shapes cannot bypass the guard.
    */
   extraApiRoutes?: (app: express.Express) => void;
+  /** Directory of the built SPA to serve (default: ../../client/dist). Tests point this at a temp dir. */
+  clientDist?: string;
 }
 
 export function createApp(options: AppOptions = {}) {
@@ -89,6 +91,14 @@ export function createApp(options: AppOptions = {}) {
       },
     },
   }));
+
+  // Authenticated, per-user data must never be stored by browsers, back/forward caches or shared
+  // proxies. First /api middleware so it also covers CSRF/rate-limit/401/404/error responses.
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+    next();
+  });
 
   // Same-origin is the target; enable CORS only when CLIENT_URL is explicitly set.
   if (process.env.CLIENT_URL) app.use(cors({ origin: process.env.CLIENT_URL }));
@@ -129,11 +139,19 @@ export function createApp(options: AppOptions = {}) {
   // Serve the built SPA (client/dist) if present — used by the Docker image,
   // where nginx proxies the whole domain to this container.
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const clientDist = path.join(__dirname, '../../client/dist');
+  const clientDist = options.clientDist ?? path.join(__dirname, '../../client/dist');
   if (fs.existsSync(clientDist)) {
-    app.use(express.static(clientDist));
+    // Vite emits content-hashed files under /assets: cache them for a year. Everything else
+    // (index.html, favicons) must be revalidated so a deploy is picked up immediately.
+    app.use(express.static(clientDist, {
+      setHeaders: (res, filePath) => {
+        const inAssets = path.relative(clientDist, filePath).split(path.sep)[0] === 'assets';
+        res.setHeader('Cache-Control', inAssets ? 'public, max-age=31536000, immutable' : 'no-cache');
+      },
+    }));
     // SPA fallback: any non-API route serves index.html
     app.get(/^\/(?!api\/).*/, (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(clientDist, 'index.html'));
     });
   }

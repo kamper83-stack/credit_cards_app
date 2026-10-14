@@ -18,10 +18,12 @@ function retryAfterSeconds(e: unknown): number | undefined {
 
 const retryHint = (s?: number) => (s ? ` (בעוד ${s} שניות)` : '');
 
-/** Friendly Hebrew message for 409/503/429 from /riseup/sync and PUT /riseup/token. */
-export function riseupErrorMessage(e: unknown, fallback: string): string {
+export type RiseupOperation = 'sync' | 'connect';
+
+/** Friendly Hebrew message for 409/503/429 from /riseup/sync (default) and PUT /riseup/token ('connect'). */
+export function riseupErrorMessage(e: unknown, fallback: string, operation: RiseupOperation = 'sync'): string {
   switch (statusOf(e)) {
-    case 409: return 'סנכרון כבר רץ';
+    case 409: return operation === 'connect' ? 'פעולה אחרת מול RiseUp כבר רצה, נסו שוב בעוד רגע' : 'סנכרון כבר רץ';
     case 503: return `השרת עסוק, נסו שוב בעוד רגע${retryHint(retryAfterSeconds(e))}`;
     case 429: return `יותר מדי ניסיונות${retryHint(retryAfterSeconds(e))}`;
     default: return serverMessage(e) ?? fallback;
@@ -55,8 +57,13 @@ export function validateEmail(email: string): string | null {
 
 export function validateNewPassword(password: string, email?: string): string | null {
   if (!password) return 'יש להזין סיסמה';
-  if (password.length < PASSWORD_MIN) return `הסיסמה חייבת להכיל לפחות ${PASSWORD_MIN} תווים`;
-  if (password.length > PASSWORD_MAX) return `הסיסמה ארוכה מדי (עד ${PASSWORD_MAX} תווים)`;
-  if (email && password.trim().toLowerCase() === email.trim().toLowerCase()) return 'הסיסמה לא יכולה להיות זהה לכתובת האימייל';
+  // Mirror the server (auth/passwordPolicy.ts): NFC-normalised, length in Unicode code points.
+  const pw = password.normalize('NFC');
+  if (pw.includes('\u0000')) return 'הסיסמה מכילה תווים לא חוקיים';
+  if (pw.trim() === '') return 'הסיסמה לא יכולה להכיל רק רווחים';
+  const len = [...pw].length;
+  if (len < PASSWORD_MIN) return `הסיסמה חייבת להכיל לפחות ${PASSWORD_MIN} תווים`;
+  if (len > PASSWORD_MAX) return `הסיסמה ארוכה מדי (עד ${PASSWORD_MAX} תווים)`;
+  if (email && pw.trim().toLowerCase() === email.trim().toLowerCase()) return 'הסיסמה לא יכולה להיות זהה לכתובת האימייל';
   return null;
 }

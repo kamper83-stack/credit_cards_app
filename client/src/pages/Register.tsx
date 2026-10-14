@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { AuthCard, FormAlert, PasswordField, SubmitButton, TextField } from '../auth/AuthForm';
@@ -7,6 +7,7 @@ import { safeRedirectPath } from '../lib/safeRedirect';
 
 export function Register() {
   const { register } = useAuth();
+  const submitting = useRef(false);
   const navigate = useNavigate();
   const location = useLocation();
   const [email, setEmail] = useState('');
@@ -16,7 +17,7 @@ export function Register() {
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (register.isPending) return;
+    if (submitting.current || register.isPending) return;
     const next = {
       email: validateEmail(email) ?? undefined,
       password: validateNewPassword(password, email) ?? undefined,
@@ -24,7 +25,9 @@ export function Register() {
     };
     setErrors(next);
     if (next.email || next.password || next.confirm) return;
+    submitting.current = true;
     register.mutate({ email: email.trim(), password }, {
+      onSettled: () => { submitting.current = false; },
       onSuccess: () => navigate(safeRedirectPath((location.state as { from?: unknown } | null)?.from), { replace: true }),
     });
   };

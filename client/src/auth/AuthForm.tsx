@@ -48,7 +48,7 @@ export function TextField({ id, label, value, onChange, error, ...rest }: FieldP
   );
 }
 
-export function PasswordField({ id, label, value, onChange, error, autoComplete, ...rest }: FieldProps & { autoComplete: 'current-password' | 'new-password' }) {
+export function PasswordField({ id, label, value, onChange, error, autoComplete, ...rest }: FieldProps & { autoComplete: 'current-password' | 'new-password' | 'off' }) {
   const [shown, setShown] = useState(false);
   return (
     <div className="space-y-1">
@@ -81,13 +81,13 @@ export function PasswordField({ id, label, value, onChange, error, autoComplete,
   );
 }
 
-/** Live region: always rendered so screen readers announce the message when it appears. */
+/** Live region (implicit via role): always rendered so screen readers announce the message when it appears. */
 export function FormAlert({ message, tone = 'error' }: { message?: string | null; tone?: 'error' | 'success' }) {
   const cls = tone === 'error'
     ? 'bg-red-900/50 text-red-400 border-red-700'
     : 'bg-green-900/30 text-green-300 border-green-700';
   return (
-    <div role={tone === 'error' ? 'alert' : 'status'} aria-live="polite">
+    <div role={tone === 'error' ? 'alert' : 'status'}>
       {message && <div className={`rounded-xl px-4 py-3 text-sm border ${cls}`}>{message}</div>}
     </div>
   );
