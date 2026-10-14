@@ -15,6 +15,7 @@ const GoalSchema = z.object({
   period_end: z.string().optional(),
   reward_description: z.string().optional(),
   reward_value: z.number().optional(),
+  active: z.union([z.boolean(), z.literal(0), z.literal(1)]).optional(),
 });
 
 function getPeriodDates(periodType: string, start?: string, end?: string) {
@@ -145,7 +146,7 @@ router.put('/:id', (req, res) => {
   `).run(d.name ?? null, d.description ?? null, d.target_amount ?? null,
     d.period_type ?? null, d.period_start ?? null, d.period_end ?? null,
     d.reward_description ?? null, d.reward_value ?? null,
-    'active' in d ? (d as any).active : null, req.params.id, userId);
+    d.active === undefined ? null : (d.active ? 1 : 0), req.params.id, userId);
 
   res.json({ success: true });
 });

@@ -12,6 +12,7 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   Client: class { connect = connectImpl; close = async () => {}; callTool = vi.fn(); },
 }));
 
+import { existsSync } from 'fs';
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
   buildChildEnv, redactSecrets, classifyRiseupFailure, toRiseupError, RiseupError,
@@ -39,7 +40,10 @@ describe('MCP child environment', () => {
     try {
       connectImpl.mockRejectedValue(new Error('boom'));
       await expect(testRiseupConnection(PAT)).rejects.toBeInstanceOf(RiseupError);
-      expect(captured.params.command).toBe('npx');
+      expect(captured.params.command).toBe(process.execPath);
+      expect(captured.params.args).toHaveLength(1);
+      expect(captured.params.args[0]).toMatch(/@riseup-oss[\\/]mcp[\\/].*index\.js$/);
+      expect(existsSync(captured.params.args[0])).toBe(true);
       // This is exactly what StdioClientTransport.start() passes to spawn().
       const effective = { ...getDefaultEnvironment(), ...captured.params.env };
       expect(effective.RISEUP_PAT).toBe(PAT);

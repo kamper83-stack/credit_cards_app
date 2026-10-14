@@ -1,3 +1,4 @@
+import { createRequire } from 'module';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -109,7 +110,7 @@ export function toRiseupError(err: unknown, pat?: string): RiseupError {
 
 /**
  * Variables forwarded to the MCP subprocess besides RISEUP_PAT (proxy / CA / tmp settings that
- * npx and node need to reach the network). The SDK additionally merges its own safe defaults
+ * node needs to reach the network). The SDK additionally merges its own safe defaults
  * (HOME, LOGNAME, PATH, SHELL, TERM, USER) - see getDefaultEnvironment in the SDK. Everything
  * else (TOKEN_ENC_KEY*, ADMIN_*, DB_PATH, cookie settings, ...) is deliberately NOT inherited.
  */
@@ -131,10 +132,19 @@ export function buildChildEnv(pat: string, parentEnv: NodeJS.ProcessEnv = proces
 
 const MCP_TIMEOUT_MS = Number(process.env.RISEUP_MCP_TIMEOUT_MS) || 90_000;
 
+/**
+ * Absolute path of the locally installed @riseup-oss/mcp entry point (the version pinned by the
+ * lockfile). Spawned with the current node binary: no `npx`, no registry lookup or download at
+ * runtime, so the code that receives the PAT is exactly what `npm ci` installed.
+ */
+export function resolveMcpEntry(): string {
+  return createRequire(import.meta.url).resolve('@riseup-oss/mcp');
+}
+
 async function withRiseupClient<T>(pat: string, fn: (client: Client) => Promise<T>): Promise<T> {
   const transport = new StdioClientTransport({
-    command: 'npx',
-    args: ['-y', '@riseup-oss/mcp'],
+    command: process.execPath,
+    args: [resolveMcpEntry()],
     env: buildChildEnv(pat),
     stderr: 'ignore', // the child's stderr could echo the token; never forward it to our logs
   });

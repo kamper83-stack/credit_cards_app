@@ -8,14 +8,17 @@ vi.mock('../src/riseup.js', async (importOriginal) => {
   return { ...actual, fetchRiseupCreditCardData: vi.fn(), testRiseupConnection: vi.fn() };
 });
 
-import { createApp } from '../src/app.js';
+import { createApp, isPublicApiRoute } from '../src/app.js';
 import db from '../src/db.js';
-import { requireAuth } from '../src/auth/middleware.js';
 import { encryptPat } from '../src/crypto.js';
 import { activeRiseupOperations } from '../src/routes/riseup.js';
 import { fetchRiseupCreditCardData, testRiseupConnection, RiseupError, type SyncResult } from '../src/riseup.js';
 
 process.env.TOKEN_ENC_KEY = randomBytes(32).toString('base64');
+// Limits are read per call. Generous defaults keep the shared users A/B usable; the dedicated
+// tests below lower them for fresh users.
+process.env.RISEUP_USER_RATE_LIMIT_MAX = '1000';
+process.env.RISEUP_TOKEN_COOLDOWN_MS = '1';
 
 const ORIGIN = 'http://app.test';
 const PW = 'correct horse battery';
@@ -377,6 +380,140 @@ describe('RiseUp per user', () => {
   });
 });
 
+async function userWithToken(email: string): Promise<Client> {
+  const u = await registerUser(email);
+  const enc = encryptPat('riseup_pat_' + 'q'.repeat(30), u.id);
+  db.prepare(`INSERT INTO user_riseup (user_id, pat_ciphertext, iv, tag, key_version) VALUES (?, ?, ?, ?, ?)`).run(u.id, enc.ciphertext, enc.iv, enc.tag, enc.keyVersion);
+  return u;
+}
+
+describe('RiseUp abuse limits', () => {
+  const withEnv = async (env: Record<string, string>, fn: () => Promise<void>) => {
+    const saved = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]));
+    Object.assign(process.env, env);
+    try { await fn(); } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  };
+
+  it('a user cannot start more than the rate limit; other users are unaffected; slot is released each time', async () => {
+    await withEnv({ RISEUP_USER_RATE_LIMIT_MAX: '2', RISEUP_USER_RATE_LIMIT_WINDOW_MS: '60000' }, async () => {
+      const hog = await userWithToken('hog@example.com');
+      const other = await userWithToken('other@example.com');
+      fetchMock.mockResolvedValue(syncData());
+      expect((await hog.post('/api/riseup/sync', { force: true })).status).toBe(200);
+      expect((await hog.post('/api/riseup/sync', { force: true })).status).toBe(200);
+      expect(activeRiseupOperations()).toBe(0);
+      const limited = await hog.post('/api/riseup/sync', { force: true });
+      expect(limited.status).toBe(429);
+      expect(limited.body.error).toMatch(/[א-ת]/);
+      expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+      // token tests count against the same budget
+      testMock.mockResolvedValue(undefined);
+      expect((await hog.put('/api/riseup/token', { token: PAT_A })).status).toBe(429);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(testMock).not.toHaveBeenCalled();
+      expect(activeRiseupOperations()).toBe(0);
+      // another user still gets a slot
+      expect((await other.post('/api/riseup/sync', { force: true })).status).toBe(200);
+    });
+  });
+
+  it('failed operations also count and release the slot', async () => {
+    await withEnv({ RISEUP_USER_RATE_LIMIT_MAX: '2', RISEUP_USER_RATE_LIMIT_WINDOW_MS: '60000' }, async () => {
+      const u = await userWithToken('failing@example.com');
+      fetchMock.mockRejectedValue(new RiseupError('network', 'x'));
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect((await u.post('/api/riseup/sync', { force: true })).status).toBe(500);
+      expect(activeRiseupOperations()).toBe(0);
+      expect((await u.post('/api/riseup/sync', { force: true })).status).toBe(500);
+      expect((await u.post('/api/riseup/sync', { force: true })).status).toBe(429);
+      spy.mockRestore();
+      expect(activeRiseupOperations()).toBe(0);
+    });
+  });
+
+  it('one user holding a slot cannot take another (409) and leaves the rest for other users', async () => {
+    const hog = await userWithToken('hog2@example.com');
+    const other = await userWithToken('other2@example.com');
+    let release!: (v: SyncResult) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<SyncResult>(r => { release = r; }));
+    const first = hog.post('/api/riseup/sync', { force: true });
+    await vi.waitFor(() => expect(activeRiseupOperations()).toBe(1));
+    expect((await hog.post('/api/riseup/sync', { force: true })).status).toBe(409);
+    expect((await hog.put('/api/riseup/token', { token: PAT_A })).status).toBe(409);
+    expect(activeRiseupOperations()).toBe(1);
+    fetchMock.mockResolvedValue(syncData());
+    expect((await other.post('/api/riseup/sync', { force: true })).status).toBe(200);
+    release(syncData());
+    expect((await first).status).toBe(200);
+    expect(activeRiseupOperations()).toBe(0);
+  });
+
+  it('a failed token test starts a per-user cooldown (429) that clears on success or expiry', async () => {
+    await withEnv({ RISEUP_TOKEN_COOLDOWN_MS: '60000' }, async () => {
+      const u = await registerUser('cool@example.com');
+      const other = await registerUser('cool2@example.com');
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      testMock.mockRejectedValueOnce(new RiseupError('auth', 'bad'));
+      expect((await u.put('/api/riseup/token', { token: PAT_A })).status).toBe(400);
+      spy.mockRestore();
+      expect(activeRiseupOperations()).toBe(0);
+      testMock.mockResolvedValue(undefined);
+      const again = await u.put('/api/riseup/token', { token: PAT_A });
+      expect(again.status).toBe(429);
+      expect(again.body.error).toMatch(/[א-ת]/);
+      expect(Number(again.headers['retry-after'])).toBeGreaterThan(0);
+      expect(testMock).toHaveBeenCalledTimes(1);
+      // other users are not affected
+      expect((await other.put('/api/riseup/token', { token: PAT_B })).status).toBe(200);
+      // a short cooldown expires
+      await withEnv({ RISEUP_TOKEN_COOLDOWN_MS: '1' }, async () => {
+        const v = await registerUser('cool3@example.com');
+        const spy2 = vi.spyOn(console, 'error').mockImplementation(() => {});
+        testMock.mockRejectedValueOnce(new RiseupError('auth', 'bad'));
+        expect((await v.put('/api/riseup/token', { token: PAT_A })).status).toBe(400);
+        spy2.mockRestore();
+        await new Promise(r => setTimeout(r, 10));
+        expect((await v.put('/api/riseup/token', { token: PAT_A })).status).toBe(200);
+      });
+    });
+  });
+});
+
+describe('goal active toggle and transaction input validation', () => {
+  it('PUT {active:0} / {active:false} deactivates, {active:1} reactivates, other fields untouched', async () => {
+    const get = async () => (await A.get('/api/goals')).body.find((g: any) => g.id === goalA);
+    expect((await get()).active).toBe(1);
+    const originalName = (await get()).name;
+    expect((await A.put(`/api/goals/${goalA}`, { active: 0 })).status).toBe(200);
+    expect((await get()).active).toBe(0);
+    expect((await get()).name).toBe(originalName);
+    expect((await A.put(`/api/goals/${goalA}`, { active: 1 })).status).toBe(200);
+    expect((await get()).active).toBe(1);
+    expect((await A.put(`/api/goals/${goalA}`, { active: false })).status).toBe(200);
+    expect((await get()).active).toBe(0);
+    expect((await A.put(`/api/goals/${goalA}`, { name: 'renamed' })).status).toBe(200);
+    expect((await get()).active).toBe(0); // omitted -> unchanged
+    expect((await A.put(`/api/goals/${goalA}`, { active: true })).status).toBe(200);
+    expect((await get()).active).toBe(1);
+    expect((await A.put(`/api/goals/${goalA}`, { active: 'yes' })).status).toBe(400);
+    expect((await A.put(`/api/goals/${goalA}`, { active: 2 })).status).toBe(400);
+  });
+
+  it('POST /transactions requires YYYY-MM-DD dates and a known type', async () => {
+    const base = { card_id: cardA, amount: 5, description: 'v' };
+    for (const date of ['2026-1-5', '15/10/2026', '2026-02-30', 'tomorrow', '2026-10-14T10:00:00Z', '']) {
+      expect((await A.post('/api/transactions', { ...base, date })).status).toBe(400);
+    }
+    expect((await A.post('/api/transactions', { ...base, date: today(), type: 'weird' })).status).toBe(400);
+    const ok = await A.post('/api/transactions', { ...base, date: today(), type: 'installments' });
+    expect(ok.status).toBe(201);
+    expect((await A.post('/api/transactions', { ...base, date: today(), type: 'normal' })).status).toBe(201);
+    expect((await A.post('/api/transactions', { ...base, date: today() })).status).toBe(201);
+  });
+});
+
 describe('sync failure responses are sanitized', () => {
   const nasty = `spawn /home/deploy/.npm/_npx/bin/npx ENOENT token=${PAT_A} env TOKEN_ENC_KEY=abc\n    at ChildProcess._handle.onexit (node:internal/child_process:285:19)\n    at /srv/app/server/src/riseup.ts:12:3`;
 
@@ -465,83 +602,159 @@ describe('no cross-user or sensitive data in any response', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Route inventory: every /api route except an allowlist must sit behind requireAuth.
+// Route protection is default-deny (one guard before every /api router). The tests below discover
+// every layer under /api structurally and then probe each one black-box as an anonymous caller.
 // ---------------------------------------------------------------------------
-
-const PUBLIC_PREFIXES = ['/api/auth/', '/api/health'];
 
 function layerMountPath(layer: any): string {
   if (layer.regexp?.fast_slash) return '';
-  const src: string = layer.regexp.source;
-  return src.replace(/^\^/, '').replace(/\\\/\?\(\?=\\\/\|\$\)$/, '').replace(/\\\//g, '/');
+  return layer.regexp.source
+    .replace(/^\^/, '').replace(/\\\/\?\(\?=\\\/\|\$\)$/, '').replace(/\\\//g, '/');
 }
 
-/** Returns "METHOD /path" for every /api route not behind requireAuth and not allowlisted. */
-function findUnprotectedRoutes(expressApp: any): { all: string[]; unprotected: string[] } {
-  const all: string[] = [];
-  const unprotected: string[] = [];
-  const guards: string[] = []; // mount paths where requireAuth was applied (in registration order)
+interface Probe { method: string; path: string; kind: string }
 
-  const check = (rawPath: unknown, methods: string[], protectedHere: boolean) => {
-    // RegExp paths: only the SPA fallback (explicitly excluding /api) is expected; any other is flagged.
-    if (typeof rawPath !== 'string') {
-      const src = String((rawPath as RegExp)?.source ?? rawPath);
-      if (!src.includes('(?!api')) unprotected.push(`REGEX ${src}`);
-      return;
-    }
-    const full = rawPath;
-    if (!full.startsWith('/api')) return;
-    for (const m of methods) {
-      const label = `${m.toUpperCase()} ${full}`;
-      all.push(label);
-      const guarded = protectedHere || guards.some(g => full === g || full.startsWith(g + '/'));
-      const allowed = PUBLIC_PREFIXES.some(p => full === p.replace(/\/$/, '') || full.startsWith(p));
-      if (!guarded && !allowed) unprotected.push(label);
-    }
-  };
-
-  for (const layer of expressApp._router.stack) {
+/** Walks an Express stack recursively. Unknown layer shapes are reported, never silently skipped. */
+function discoverApiLayers(stack: any[], base: string, probes: Probe[], unknown: string[]) {
+  for (const layer of stack) {
     if (layer.route) {
-      const routeGuard = layer.route.stack.some((l: any) => l.handle === requireAuth);
-      check(layer.route.path, Object.keys(layer.route.methods), routeGuard);
-    } else if (layer.handle === requireAuth) {
-      guards.push(layerMountPath(layer));
-    } else if (layer.name === 'router') {
-      const base = layerMountPath(layer);
-      for (const inner of layer.handle.stack) {
-        if (!inner.route) continue;
-        const routeGuard = inner.route.stack.some((l: any) => l.handle === requireAuth);
-        const p = inner.route.path === '/' ? '' : inner.route.path;
-        check(base + p, Object.keys(inner.route.methods), routeGuard);
+      const p = layer.route.path === '/' ? '' : String(layer.route.path);
+      if (typeof layer.route.path !== 'string') {
+        // The SPA fallback (only present with a client build) explicitly excludes /api; anything else is unknown.
+        if (!String(layer.route.path?.source).includes('(?!api')) unknown.push(`route with non-string path ${layer.route.path}`);
+        continue;
       }
+      for (const m of Object.keys(layer.route.methods)) probes.push({ method: m, path: base + p, kind: 'route' });
+      continue;
+    }
+    const mount = base + layerMountPath(layer);
+    if (layer.name === 'router' && Array.isArray(layer.handle?.stack)) {
+      discoverApiLayers(layer.handle.stack, mount, probes, unknown);
+    } else if (layer.name === 'mounted_app') {
+      // Express hides a sub-app's stack in a closure, so it cannot be walked: flag it and probe its root.
+      unknown.push(`sub-app at ${mount} (stack not introspectable)`);
+      probes.push(...['get', 'post'].map(method => ({ method, path: mount || '/', kind: 'sub-app root' })));
+    } else if (typeof layer.handle === 'function' && !layer.handle.stack && !layer.handle._router) {
+      // plain middleware: only interesting when mounted under /api (global middleware has no mount path)
+      if (mount.startsWith('/api')) {
+        for (const method of ['get', 'post', 'delete']) probes.push({ method, path: mount, kind: `middleware ${layer.name}` });
+      }
+    } else {
+      unknown.push(`unrecognised layer ${layer.name} at ${mount}`);
     }
   }
-  return { all, unprotected };
 }
 
-describe('route inventory', () => {
-  it('every /api route is behind requireAuth except the allowlist', () => {
-    const { all, unprotected } = findUnprotectedRoutes(app);
+const concretePath = (p: string) => p.replace(/:[A-Za-z_]+/g, 'x');
+
+async function probeAnonymously(target: any) {
+  const probes: Probe[] = [];
+  const unknown: string[] = [];
+  discoverApiLayers(target._router.stack, '', probes, unknown);
+  const apiProbes = probes.filter(p => p.path.startsWith('/api'));
+  const failures: string[] = [];
+  for (const pr of apiProbes) {
+    const url = concretePath(pr.path);
+    if (isPublicApiRoute(pr.method, url.slice('/api'.length) || '/')) continue;
+    const res = await (request(target) as any)[pr.method](url).set('Origin', ORIGIN).send({});
+    if (res.status !== 401) failures.push(`${pr.method.toUpperCase()} ${url} (${pr.kind}) -> ${res.status}`);
+  }
+  return { probes: apiProbes, unknown, failures };
+}
+
+describe('default-deny route protection', () => {
+  it('the real app: every discovered /api route/middleware answers anonymous callers with 401 (except the allowlist)', async () => {
+    const { probes, unknown, failures } = await probeAnonymously(app);
+    const labels = probes.map(p => `${p.method.toUpperCase()} ${p.path}`);
     // Guard against a vacuous pass if Express internals change.
-    expect(all).toEqual(expect.arrayContaining([
+    expect(labels).toEqual(expect.arrayContaining([
       'GET /api/cards', 'POST /api/cards', 'PUT /api/cards/:id', 'DELETE /api/cards/:id',
       'GET /api/goals', 'DELETE /api/goals/:id', 'GET /api/transactions', 'DELETE /api/transactions/:id',
       'GET /api/riseup/status', 'PUT /api/riseup/token', 'DELETE /api/riseup/token', 'POST /api/riseup/sync',
-      'POST /api/auth/login', 'GET /api/health',
+      'POST /api/auth/login', 'GET /api/auth/me', 'POST /api/auth/change-password', 'GET /api/health',
     ]));
-    expect(unprotected).toEqual([]);
+    expect(unknown).toEqual([]);
+    expect(failures).toEqual([]);
   });
 
-  it('detects an unprotected route (the check itself works)', () => {
-    const fake = express();
-    const r = express.Router();
-    r.get('/leak', (_req, res) => res.json({}));
-    fake.use('/api/secrets', r);
-    fake.get('/api/other', (_req, res) => res.json({}));
-    const guarded = express.Router();
-    guarded.get('/ok', (_req, res) => res.json({}));
-    fake.use('/api/fine', requireAuth, guarded);
-    const { unprotected } = findUnprotectedRoutes(fake);
-    expect(unprotected.sort()).toEqual(['GET /api/other', 'GET /api/secrets/leak']);
+  it('only the exact allowlist is public', () => {
+    for (const [m, p] of [['POST', '/auth/register'], ['POST', '/auth/login'], ['POST', '/auth/logout'], ['GET', '/health'], ['GET', '/health/'], ['get', '/HEALTH']]) {
+      expect(isPublicApiRoute(m, p)).toBe(true);
+    }
+    for (const [m, p] of [['GET', '/healthdump'], ['GET', '/health/x'], ['GET', '/health/../cards'], ['POST', '/health'], ['GET', '/auth/me'],
+      ['POST', '/auth/change-password'], ['GET', '/auth/login'], ['POST', '/auth/login/x'], ['GET', '//health'], ['GET', '/cards']]) {
+      expect(isPublicApiRoute(m, p)).toBe(false);
+    }
+  });
+
+  describe('the guard blocks every bypass shape a developer could add later', () => {
+    const SECRET = { secret: 'leaked' };
+    const bypassApp = createApp({
+      allowedOrigins: [ORIGIN], cookieSecure: false, rateLimitMax: 1_000_000,
+      loginIpMax: 1000, loginEmailMax: 1000, loginEmailGlobalMax: 1000, registerIpMax: 1000,
+      extraApiRoutes: (a) => {
+        a.use('/api/dump', (_req, res) => res.json(SECRET));                       // plain middleware
+        const sub = express();                                                      // mounted sub-app
+        sub.get('/', (_req, res) => res.json(SECRET));
+        sub.get('/deep', (_req, res) => res.json(SECRET));
+        a.use('/api/subapp', sub);
+        const outer = express.Router(); const inner = express.Router();              // nested router
+        inner.get('/leak', (_req, res) => res.json(SECRET));
+        outer.use('/inner', inner);
+        a.use('/api/nested', outer);
+        a.get('/api/healthdump', (_req, res) => res.json(SECRET));                  // prefix of an allowlisted path
+      },
+    });
+    const shapes = ['/api/dump', '/api/dump/anything', '/api/subapp', '/api/subapp/deep', '/api/nested/inner/leak', '/api/healthdump',
+      '/api/health/../dump', '/API/dump', '/api/dump/', '/api//dump'];
+
+    it.each(shapes)('anonymous GET %s is never served', async (url) => {
+      const res = await request(bypassApp).get(url).set('Origin', ORIGIN);
+      expect([401, 404]).toContain(res.status);
+      expect(res.text).not.toContain('leaked');
+    });
+
+    it.each(['/api/dump', '/api/subapp', '/api/subapp/deep', '/api/nested/inner/leak', '/api/healthdump'])('anonymous GET %s is exactly 401', async (url) => {
+      expect((await request(bypassApp).get(url).set('Origin', ORIGIN)).status).toBe(401);
+    });
+
+    it('the shapes really exist: signed-in users reach them (so the 401s above come from the guard)', async () => {
+      const email = 'bypass@example.com';
+      const reg = await request(bypassApp).post('/api/auth/register').set('Origin', ORIGIN).send({ email, password: PW });
+      const cookie = (reg.headers['set-cookie'] as unknown as string[])[0].split(';')[0];
+      for (const url of ['/api/dump', '/api/subapp', '/api/subapp/deep', '/api/nested/inner/leak', '/api/healthdump']) {
+        const res = await request(bypassApp).get(url).set('Origin', ORIGIN).set('Cookie', cookie);
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual(SECRET);
+      }
+    });
+
+    it('structural + black-box discovery finds and probes every bypass shape', async () => {
+      const { probes, unknown, failures } = await probeAnonymously(bypassApp);
+      const paths = probes.map(p => p.path);
+      for (const p of ['/api/dump', '/api/subapp', '/api/nested/inner/leak', '/api/healthdump']) expect(paths).toContain(p);
+      // nested routers are walked; a sub-app cannot be, so it is flagged for a human to look at
+      expect(unknown).toEqual(['sub-app at /api/subapp (stack not introspectable)']);
+      expect(failures).toEqual([]);
+    });
+
+    it('flags layer shapes it cannot analyse', () => {
+      const weird = [{ name: 'weird', regexp: { source: '^\\/api\\/x\\/?(?=\\/|$)' }, handle: { stack: [] } }];
+      const probes: Probe[] = []; const unknown: string[] = [];
+      discoverApiLayers(weird, '', probes, unknown);
+      expect(unknown).toEqual(['unrecognised layer weird at /api/x']);
+    });
+  });
+});
+
+describe('unknown /api paths', () => {
+  it('anonymous -> 401, authenticated -> JSON 404 (also for //, trailing slash and case variants)', async () => {
+    for (const url of ['/api/nope', '/api//cards', '/api/cards/../nope', '/api/auth/nope']) {
+      expect((await request(app).get(url).set('Origin', ORIGIN)).status).toBe(401);
+      const res = await A.get(url);
+      expect(res.status).toBe(404);
+      expect(res.headers['content-type']).toMatch(/json/);
+      expect(res.body).toEqual({ error: 'Not found' });
+    }
   });
 });

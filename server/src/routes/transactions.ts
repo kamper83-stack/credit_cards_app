@@ -12,10 +12,10 @@ const router = Router();
 const TxSchema = z.object({
   card_id: z.string().uuid(),
   amount: z.number().positive(),
-  date: z.string(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(d => !Number.isNaN(Date.parse(d)) && new Date(d).toISOString().slice(0, 10) === d),
   description: z.string().min(1),
   category: z.string().optional(),
-  type: z.string().optional(),
+  type: z.enum(['normal', 'installments']).optional(),
 });
 
 router.get('/', (req, res) => {

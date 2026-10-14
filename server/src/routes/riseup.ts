@@ -16,25 +16,63 @@ const router = Router();
 const DECRYPT_FAILED = 'פענוח הטוקן נכשל. בדוק את TOKEN_ENC_KEY.';
 const SYNC_FAILED = 'הסנכרון נכשל. נסה שוב מאוחר יותר.';
 const BUSY_USER = 'פעולת RiseUp כבר מתבצעת עבור המשתמש. נסה שוב בעוד רגע.';
+const RATE_LIMITED = 'בוצעו יותר מדי ניסיונות מול RiseUp. נסה שוב מאוחר יותר.';
+const COOLDOWN = 'בדיקת הטוקן האחרונה נכשלה. המתן מספר שניות ונסה שוב.';
 const BUSY_SERVER = 'השרת עסוק כרגע בסנכרונים אחרים. נסה שוב בעוד כמה שניות.';
 
-// Concurrency control. Each RiseUp call spawns an `npx` MCP subprocess, so (a) one user can run
-// only one at a time (409) and (b) the server runs at most MAX_CONCURRENT_MCP at once (503).
+// Concurrency and rate control. Each RiseUp call spawns a Node MCP subprocess, so:
+//  (a) one user can run only one at a time (409),
+//  (b) one user may start at most RISEUP_USER_RATE_LIMIT_MAX (default 5) per
+//      RISEUP_USER_RATE_LIMIT_WINDOW_MS (default 15 min) spawning operations (429), so a single
+//      account cannot keep the global slots occupied back to back,
+//  (c) after a failed token test the user waits RISEUP_TOKEN_COOLDOWN_MS (default 30s) before the
+//      next token attempt (429), and
+//  (d) the server runs at most RISEUP_MAX_CONCURRENT (default 3) at once (503).
 // In-memory: correct for the single-process deployment (pm2 fork mode / one container).
+// Limits are read per call so they can be tuned (and tested) without a module reload.
 const MAX_CONCURRENT_MCP = Math.max(1, Number(process.env.RISEUP_MAX_CONCURRENT) || 3);
 const activeUsers = new Set<string>();
+const userHits = new Map<string, number[]>();
+const tokenCooldownUntil = new Map<string, number>();
 
-type Slot = { release: () => void } | { status: 409 | 503; error: string };
+const envNum = (name: string, def: number) => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : def;
+};
+const userRateMax = () => Math.floor(envNum('RISEUP_USER_RATE_LIMIT_MAX', 5));
+const userRateWindowMs = () => envNum('RISEUP_USER_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000);
+const tokenCooldownMs = () => envNum('RISEUP_TOKEN_COOLDOWN_MS', 30_000);
 
+type Refusal = { status: 409 | 429 | 503; error: string; retryAfterSec?: number };
+type Slot = { release: () => void } | Refusal;
+
+function pruneExpired(now: number) {
+  if (userHits.size < 1000 && tokenCooldownUntil.size < 1000) return;
+  const cutoff = now - userRateWindowMs();
+  for (const [k, hits] of userHits) if (!hits.length || hits[hits.length - 1] <= cutoff) userHits.delete(k);
+  for (const [k, until] of tokenCooldownUntil) if (until <= now) tokenCooldownUntil.delete(k);
+}
+
+/** Takes the per-user lock and a global slot, counting one hit against the user's rate limit. */
 function acquireSlot(userId: string): Slot {
+  const now = Date.now();
+  pruneExpired(now);
   if (activeUsers.has(userId)) return { status: 409, error: BUSY_USER };
+  const hits = (userHits.get(userId) ?? []).filter(t => t > now - userRateWindowMs());
+  if (hits.length >= userRateMax()) {
+    userHits.set(userId, hits);
+    return { status: 429, error: RATE_LIMITED, retryAfterSec: Math.max(1, Math.ceil((hits[0] + userRateWindowMs() - now) / 1000)) };
+  }
   if (activeUsers.size >= MAX_CONCURRENT_MCP) return { status: 503, error: BUSY_SERVER };
+  hits.push(now);
+  userHits.set(userId, hits);
   activeUsers.add(userId);
   return { release: () => { activeUsers.delete(userId); } };
 }
 
-function refuse(res: Response, slot: { status: 409 | 503; error: string }) {
+function refuse(res: Response, slot: Refusal) {
   if (slot.status === 503) res.set('Retry-After', '10');
+  if (slot.status === 429) res.set('Retry-After', String(slot.retryAfterSec ?? 30));
   return res.status(slot.status).json({ error: slot.error });
 }
 
@@ -89,11 +127,19 @@ router.put('/token', async (req, res) => {
     return res.status(400).json({ error: 'פורמט הטוקן אינו תקין. הוא אמור להתחיל ב-riseup_pat_' });
   }
 
+  const cooldownLeft = (tokenCooldownUntil.get(userId) ?? 0) - Date.now();
+  if (cooldownLeft > 0) {
+    res.set('Retry-After', String(Math.ceil(cooldownLeft / 1000)));
+    return res.status(429).json({ error: COOLDOWN });
+  }
+
   const slot = acquireSlot(userId);
   if (!('release' in slot)) return refuse(res, slot);
   try {
     await testRiseupConnection(token);
+    tokenCooldownUntil.delete(userId);
   } catch (err) {
+    tokenCooldownUntil.set(userId, Date.now() + tokenCooldownMs());
     const e = toRiseupError(err, token);
     logFailure('RiseUp token test failed', e, token);
     return res.status(400).json({ error: e.message });

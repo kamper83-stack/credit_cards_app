@@ -30,10 +30,34 @@ function parseTrustProxy(value: string | undefined): boolean | number | string {
   return value;
 }
 
+/**
+ * Exact-match public allowlist, relative to the /api mount. Matching is case-insensitive and
+ * ignores trailing slashes (as Express routing does), so no spelling of a protected path can match.
+ * GET /auth/me and POST /auth/change-password are deliberately NOT listed: the guard answers
+ * anonymous callers with the same 401 their own requireAuth would.
+ */
+const PUBLIC_API_ROUTES = new Set([
+  'POST /auth/register',
+  'POST /auth/login',
+  'POST /auth/logout', // idempotent; works without a session so a stale cookie can still be cleared
+  'GET /health',
+  'HEAD /health',
+]);
+
+export function isPublicApiRoute(method: string, path: string): boolean {
+  const normalized = path.toLowerCase().replace(/\/+$/, '') || '/';
+  return PUBLIC_API_ROUTES.has(`${method.toUpperCase()} ${normalized}`);
+}
+
 export interface AppOptions extends AuthOptions {
   trustProxy?: boolean | number | string;
   rateLimitMax?: number;
   rateLimitWindowMs?: number;
+  /**
+   * Registers extra /api routes behind the default-deny guard (after the built-in routers, before
+   * the JSON 404). Used by tests to prove that arbitrary route shapes cannot bypass the guard.
+   */
+  extraApiRoutes?: (app: express.Express) => void;
 }
 
 export function createApp(options: AppOptions = {}) {
@@ -83,17 +107,24 @@ export function createApp(options: AppOptions = {}) {
   // Attaches req.user when a valid session cookie is present (never rejects).
   app.use('/api', warnInsecureCookieMode(authConfig));
   app.use('/api', sessionLoader(db, authConfig));
-  app.use('/api/auth', createAuthRouter(db, authConfig));
+  // Default-deny: every /api request needs a session unless it is on the exact-match allowlist
+  // below. The guard sits before every /api router, so a route, middleware, nested router or
+  // sub-app added later is protected without anyone remembering to add requireAuth to it.
+  app.use('/api', (req, res, next) => (isPublicApiRoute(req.method, req.path) ? next() : requireAuth(req, res, next)));
 
-  // Every data route requires a session; handlers scope every query by req.user.id.
-  // Only /api/auth/* (which does its own checks) and /api/health are public. The route-inventory
-  // test in test/isolation.test.ts fails if a new /api route is added without requireAuth.
-  app.use('/api/cards', requireAuth, cardsRouter);
-  app.use('/api/goals', requireAuth, goalsRouter);
-  app.use('/api/transactions', requireAuth, transactionsRouter);
-  app.use('/api/riseup', requireAuth, riseupRouter);
+  app.use('/api/auth', createAuthRouter(db, authConfig));
+  app.use('/api/cards', cardsRouter);
+  app.use('/api/goals', goalsRouter);
+  app.use('/api/transactions', transactionsRouter);
+  app.use('/api/riseup', riseupRouter);
 
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
+  options.extraApiRoutes?.(app);
+
+  // Anything else under /api (reachable only by signed-in users, see the guard) is a JSON 404,
+  // never the SPA's HTML or Express's default page.
+  app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
+
 
   // Serve the built SPA (client/dist) if present — used by the Docker image,
   // where nginx proxies the whole domain to this container.
