@@ -58,6 +58,9 @@ WARN=0
 ok()   { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$1"; }
 bad()  { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; }
 warn() { WARN=$((WARN + 1)); printf '  WARN  %s\n' "$1"; }
+# IMPORTANT: capture the condition's status with `rc=$?` on the line BEFORE calling check, and pass
+# "$rc". Never put `$(...)` in the description and `$?` in the same call: the command substitution
+# runs first and overwrites `$?`, so the check would always pass.
 check() { # check "description" <exit status of the condition>
   if [ "$2" -eq 0 ]; then ok "$1"; else bad "$1"; fi
 }
@@ -90,7 +93,8 @@ grep -q '"ok":true' "$BODY"; check "health body is {ok:true}" $?
 
 request GET /api/cards
 check "anonymous GET /api/cards -> 401 (got $STATUS)" "$([ "$STATUS" = 401 ]; echo $?)"
-header Cache-Control | grep -qi 'no-store'; check "Cache-Control: no-store on /api (got '$(header Cache-Control)')" $?
+header Cache-Control | grep -qi 'no-store'; rc=$?
+check "Cache-Control: no-store on /api (got '$(header Cache-Control)')" "$rc"
 if grep -q 'riseup_pat\|"email"' "$BODY"; then bad "401 body leaks data"; else ok "401 body carries no data"; fi
 
 request GET /
@@ -100,7 +104,8 @@ header Content-Type | grep -qi 'text/html'; check "SPA shell is text/html" $?
 has_header Content-Security-Policy; check "Content-Security-Policy present on /" $?
 header Content-Security-Policy | grep -q "default-src 'self'"; check "CSP default-src 'self'" $?
 header X-Content-Type-Options | grep -qi nosniff; check "X-Content-Type-Options: nosniff on /" $?
-header Cache-Control | grep -qi 'no-cache'; check "index.html is Cache-Control: no-cache (got '$(header Cache-Control)')" $?
+header Cache-Control | grep -qi 'no-cache'; rc=$?
+check "index.html is Cache-Control: no-cache (got '$(header Cache-Control)')" "$rc"
 
 request GET /login
 check "SPA fallback: GET /login -> 200 (got $STATUS)" "$([ "$STATUS" = 200 ]; echo $?)"
@@ -110,7 +115,7 @@ has_header Content-Security-Policy; check "Content-Security-Policy present on /a
 header X-Content-Type-Options | grep -qi nosniff; check "X-Content-Type-Options: nosniff on /api" $?
 if [ "$IS_HTTPS" -eq 1 ]; then
   if has_header Strict-Transport-Security; then ok "Strict-Transport-Security present (https)"
-  else warn "no Strict-Transport-Security header (enable HSTS in nginx once HTTPS is verified)"; fi
+  else warn "no Strict-Transport-Security header (the app sends it only with NODE_ENV=production; do not add it in nginx, see deploy/DEPLOY.md)"; fi
 fi
 
 request POST /api/auth/login -H 'Content-Type: application/json' -H 'Origin: https://evil.example' \
@@ -128,10 +133,15 @@ if [ "$REGISTER" -eq 1 ]; then
   # 24 random alphanumerics + fixed suffix: satisfies the 10-128 character policy, never logged.
   PASSWORD="$(od -An -N18 -tx1 /dev/urandom | tr -d ' \n')Aa1"
   JSON_HDR='Content-Type: application/json'
+  # Secrets never go in curl's argv (visible in `ps`): the credentials JSON is read from a file
+  # (--data @file) and session cookies are sent via a header file (-H @file). $TMP is mode 700.
+  CRED="$TMP/cred.json"
+  ( umask 077; printf '{"email":"%s","password":"%s"}' "$EMAIL" "$PASSWORD" >"$CRED" )
+  cookie_hdr() { ( umask 077; printf 'Cookie: %s=%s\n' "$1" "$2" >"$TMP/cookie-hdr" ); }
   ORIGIN_HDR="Origin: $ORIGIN"
 
   request POST /api/auth/register -c "$JAR" -b "$JAR" -H "$JSON_HDR" -H "$ORIGIN_HDR" \
-    --data "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}"
+    --data @"$CRED"
   check "register -> 201 (got $STATUS)" "$([ "$STATUS" = 201 ]; echo $?)"
   if [ "$STATUS" != 201 ]; then
     printf '        body: %s\n' "$(head -c 300 "$BODY")"
@@ -140,14 +150,16 @@ if [ "$REGISTER" -eq 1 ]; then
     SETCOOKIE="$(grep -i '^set-cookie:' "$HEADERS" | head -n 1 | sed -E 's/^[^:]*:[[:space:]]*//')"
     COOKIE_NAME="${SETCOOKIE%%=*}"
     COOKIE_VALUE="$(printf '%s' "$SETCOOKIE" | sed -E 's/^[^=]*=([^;]*).*/\1/')"
-    [ -n "$COOKIE_VALUE" ]; check "register sets a session cookie ($COOKIE_NAME)" $?
+    [ -n "$COOKIE_VALUE" ]; rc=$?
+    check "register sets a session cookie ($COOKIE_NAME)" "$rc"
     printf '%s' "$SETCOOKIE" | grep -qi '; *HttpOnly'; check "cookie has HttpOnly" $?
     printf '%s' "$SETCOOKIE" | grep -qi '; *SameSite=\(Lax\|Strict\)'; check "cookie has SameSite=Lax|Strict" $?
     printf '%s' "$SETCOOKIE" | grep -qi '; *Path=/\(;\|$\)'; check "cookie has Path=/" $?
     if printf '%s' "$SETCOOKIE" | grep -qi '; *Domain='; then bad "cookie must not set Domain (host-only)"; else ok "cookie is host-only (no Domain)"; fi
     if [ "$IS_HTTPS" -eq 1 ]; then
       printf '%s' "$SETCOOKIE" | grep -qi '; *Secure'; check "cookie has Secure (https)" $?
-      [ "$COOKIE_NAME" = "__Host-sid" ]; check "cookie name is __Host-sid (got $COOKIE_NAME)" $?
+      [ "$COOKIE_NAME" = "__Host-sid" ]; rc=$?
+      check "cookie name is __Host-sid (got $COOKIE_NAME)" "$rc"
     else
       if printf '%s' "$SETCOOKIE" | grep -qi '; *Secure'; then
         warn "http origin but the cookie is Secure: the browser will drop it. Set COOKIE_SECURE=false for plain http, or use https"
@@ -163,7 +175,7 @@ if [ "$REGISTER" -eq 1 ]; then
     # Fresh login with a separate jar: the new session must differ from the registration one.
     JAR2="$TMP/jar2"
     request POST /api/auth/login -c "$JAR2" -b "$JAR2" -H "$JSON_HDR" -H "$ORIGIN_HDR" \
-      --data "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}"
+      --data @"$CRED"
     check "login -> 200 (got $STATUS)" "$([ "$STATUS" = 200 ]; echo $?)"
     LOGIN_COOKIE="$(grep -i '^set-cookie:' "$HEADERS" | head -n 1 | sed -E 's/^[^=]*=([^;]*).*/\1/')"
     [ -n "$LOGIN_COOKIE" ] && [ "$LOGIN_COOKIE" != "$COOKIE_VALUE" ]; check "login issues a new session token" $?
@@ -180,12 +192,14 @@ if [ "$REGISTER" -eq 1 ]; then
 
     # Replay the OLD token by hand: proves the session is revoked server-side, not just dropped
     # from the client's cookie jar.
-    request GET /api/auth/me -H "Cookie: $COOKIE_NAME=$LOGIN_COOKIE"
+    cookie_hdr "$COOKIE_NAME" "$LOGIN_COOKIE"
+    request GET /api/auth/me -H @"$TMP/cookie-hdr"
     check "logged-out session token is rejected -> 401 (got $STATUS)" "$([ "$STATUS" = 401 ]; echo $?)"
-    request GET /api/auth/me -H "Cookie: $COOKIE_NAME=$COOKIE_VALUE"
+    cookie_hdr "$COOKIE_NAME" "$COOKIE_VALUE"
+    request GET /api/auth/me -H @"$TMP/cookie-hdr"
     check "registration session token still valid until its own logout (got $STATUS)" "$([ "$STATUS" = 200 ]; echo $?)"
-    request POST /api/auth/logout -H "$JSON_HDR" -H "$ORIGIN_HDR" -H "Cookie: $COOKIE_NAME=$COOKIE_VALUE" --data '{}'
-    request GET /api/auth/me -H "Cookie: $COOKIE_NAME=$COOKIE_VALUE"
+    request POST /api/auth/logout -H "$JSON_HDR" -H "$ORIGIN_HDR" -H @"$TMP/cookie-hdr" --data '{}'
+    request GET /api/auth/me -H @"$TMP/cookie-hdr"
     check "after logout the registration token is rejected -> 401 (got $STATUS)" "$([ "$STATUS" = 401 ]; echo $?)"
     echo "  note  throwaway user left in the database: $EMAIL"
   fi

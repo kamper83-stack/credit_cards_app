@@ -59,6 +59,8 @@ TOKEN_ENC_KEY=<הפלט של openssl>
 
 בלי `TOKEN_ENC_KEY` השרת עולה, אבל שמירת טוקן RiseUp תיכשל (500). ללא TLS (גישה ב-HTTP בלבד, רק לבדיקה מקומית) הוסיפו `COOKIE_SECURE=false`.
 
+**שימו לב:** אחרי `umask 077` התיקייה `data` נוצרת בהרשאות 700 בבעלות המשתמש שלכם, והקונטיינר (uid 1000) לא יוכל לכתוב בה. לכן ה-`chown -R 1000:1000 data` למעלה הוא חובה, ויש להריץ אותו שוב אחרי כל פעולה כ-root על `data/` (למשל `sudo sqlite3` כשהקונטיינר עצור).
+
 אחר כך הגדירו nginx (סעיף 4.5), הריצו את בדיקת העשן (4.8) ופתחו את האתר.
 
 ## 4. שדרוג מהגרסה הישנה (משתמש יחיד) ל-rewards.erankam.dev
@@ -131,7 +133,7 @@ ADMIN_PASSWORD='<לפחות 12 תווים>'
 ```
 
 - `ADMIN_PASSWORD` נדרש רק להפעלה הראשונה (סעיף 4.9). אם הסיסמה מכילה `$`, השאירו אותה בגרשיים בודדים. חלופה `ADMIN_PASSWORD_FILE` דורשת גם volume לקובץ ב-`docker-compose.yml`; הדרך הפשוטה היא `ADMIN_PASSWORD`.
-- `COOKIE_SECURE=true` (ברירת המחדל כאן) נכון רק מאחורי HTTPS **ועם** `X-Forwarded-Proto`. עם `false` ה-cookie נקרא `sid` בלי `Secure` ונשלח גם ב-HTTP: מתאים רק לבדיקה מקומית או ל-Tailscale בלי TLS. ב-`false` ה-session חשוף לצותת ברשת.
+- `COOKIE_SECURE=true` (ברירת המחדל כאן) נכון רק מאחורי HTTPS. מומלץ להעביר גם `X-Forwarded-Proto` (בלעדיו השרת רואה בקשות כ-http ורק רושם אזהרה בלוג; ה-cookie עדיין נשלח ונשמר בדפדפן שניגש ב-HTTPS). עם `false` ה-cookie נקרא `sid` בלי `Secure` ונשלח גם ב-HTTP: מתאים רק לבדיקה מקומית או ל-Tailscale בלי TLS. ב-`false` ה-session חשוף לצותת ברשת.
 - `TRUST_PROXY=loopback,linklocal,uniquelocal` כבר מוגדר ב-`docker-compose.yml` (אין צורך ב-`.env`).
 - ודאו שהערכים הגיעו לקונטיינר בלי להדפיס אותם (אחרי ההפעלה): `docker compose exec app sh -c 'test -n "$TOKEN_ENC_KEY" && echo key-set'`.
 
@@ -142,7 +144,7 @@ ADMIN_PASSWORD='<לפחות 12 תווים>'
 - [ ] `proxy_pass http://127.0.0.1:3006;`
 - [ ] `proxy_set_header Host $host;` - הערך המקורי, בלי שינוי (בדיקת CSRF משווה `Origin` ל-`Host`).
 - [ ] `proxy_set_header X-Forwarded-For $remote_addr;` - **דורס**, לא `$proxy_add_x_forwarded_for`, כש-nginx הוא הקפיצה הראשונה. אחרת לקוח יזייף כתובת ויעקוף את ה-rate limit. (אם יש CDN לפני nginx, הגדירו `real_ip` קודם.)
-- [ ] `proxy_set_header X-Forwarded-Proto $scheme;` - בלעדיו עם `COOKIE_SECURE=true` יופיע בלוג `WARNING: COOKIE_SECURE is on but a request arrived over plain http`.
+- [ ] `proxy_set_header X-Forwarded-Proto $scheme;` - בלעדיו עם `COOKIE_SECURE=true` יופיע בלוג `WARNING: COOKIE_SECURE is on but a request arrived over plain http`. זו אזהרה בלבד: היא לא מונעת את שמירת ה-cookie בדפדפן, אבל היא מסמנת הגדרה שגויה שכדאי לתקן.
 - [ ] `proxy_set_header X-Forwarded-Host $http_host;` (דורס).
 - [ ] **בלי** `proxy_hide_header`/`add_header` שמשכפלים כותרות אבטחה: האפליקציה שולחת CSP, `nosniff`, `Referrer-Policy`, HSTS ו-`Cache-Control: no-store` על `/api`. אל תוסיפו `expires`/`proxy_cache` על `/api`.
 - [ ] TLS תקף, הפניה מ-80 ל-443, `ssl_protocols TLSv1.2 TLSv1.3`. HSTS נשלח מהאפליקציה; אל תוסיפו עוד אחד.
@@ -162,7 +164,7 @@ docker compose up -d
 docker compose logs -f app              # Ctrl-C ליציאה
 ```
 
-בלי ה-`chown` הקונטיינר החדש לא יצליח לפתוח את המסד ויקרוס (`unable to open database file`), בלי לשנות אותו. תקנו עם הפקודה למעלה והפעילו שוב.
+בלי ה-`chown` הקונטיינר החדש לא יצליח לפתוח את המסד ויקרוס (`unable to open database file`), בלי לשנות אותו. תקנו עם הפקודה למעלה והפעילו שוב. אם ה-`chown` דולג, ההפעלה נעצרת עם שגיאה מהצורה `Startup aborted: EACCES: permission denied, open '/app/data/rewards.db.bak-<חותמת-זמן>'` (השרת לא הצליח לכתוב את הגיבוי לפני המיגרציה, והמסד לא שונה); הפתרון הוא אותו `chown`.
 
 ### 4.7 אימות
 
@@ -189,7 +191,7 @@ scripts/smoke-test.sh https://rewards.erankam.dev --no-register   # בדיקות
 3. הרשמה והתחברות עם משתמש בדיקה שני (או `scripts/smoke-test.sh https://rewards.erankam.dev` המלא, שיוצר משתמש זמני `smoke-<hex>@example.com`): המשתמש החדש רואה רשימות ריקות ולא את נתוני המנהל.
 4. בדיקת cookie: בכלי המפתחים, `__Host-sid` עם `HttpOnly`, `Secure`, `SameSite=Lax`.
 
-אם ההתחברות "מצליחה" אבל נזרקים בחזרה למסך הכניסה: ה-cookie לא נשמר. סיבות נפוצות: `COOKIE_SECURE=true` בגישה ב-HTTP, או nginx בלי `X-Forwarded-Proto` (ראו אזהרה בלוג).
+אם ההתחברות "מצליחה" אבל נזרקים בחזרה למסך הכניסה: ה-cookie לא נשמר. סיבה נפוצה: `COOKIE_SECURE=true` בגישה ב-HTTP פשוט (הדפדפן זורק cookie עם `Secure`). אזהרה בלוג על `X-Forwarded-Proto` חסר מצביעה על הגדרת nginx שגויה, אך כשלעצמה אינה גורמת לאובדן ה-cookie בגישת HTTPS.
 
 ### 4.8 בדיקת עשן
 
@@ -205,6 +207,8 @@ sudo sqlite3 data/rewards.db "PRAGMA foreign_keys=ON; DELETE FROM users WHERE em
 ```
 
 (`foreign_keys=ON` נדרש כדי שה-sessions של המשתמש יימחקו איתו; משתמש בדיקה לא מחזיק כרטיסים.)
+
+מחיקה עם `sudo sqlite3` מבוצעת כשהקונטיינר **עצור** (`docker compose stop app`), ואחריה חובה להחזיר בעלות לפני ההפעלה: `sudo chown -R 1000:1000 data && docker compose up -d`. בלי זה קבצי `-wal`/`-shm` שנוצרו כ-root יגרמו לקונטיינר (uid 1000) להיכשל בפתיחת המסד.
 
 ### 4.9 ניקיון אחרי אימות
 
@@ -233,16 +237,26 @@ docker compose down
 sudo mv data data.failed-$(date +%Y%m%d-%H%M%S)          # שומרים לבדיקה, לא מוחקים
 sudo cp -a data.bak-<החותמת-שלכם> data                   # הגיבוי מסעיף 4.2 (בבעלות root כמו המקור)
 
-# גרסת הקוד הקודמת: או מה-image ששמרנו...
+# גרסת הקוד הקודמת - הדרך המומלצת: compose, כך שהקונטיינר נשאר מנוהל (restart policy, healthcheck)
+git checkout <ה-commit הישן מסעיף 4.1> && docker compose up -d --build
+```
+
+חלופה (אם אי אפשר לבנות מחדש): להריץ את ה-image ששמרנו בסעיף 4.1. זה יוצר קונטיינר ידני ש-`docker compose` לא מנהל:
+
+```bash
 docker run -d --name credit-cards-app --restart unless-stopped \
   -p 127.0.0.1:3006:3000 -v "$PWD/data:/app/data" \
   -e NODE_ENV=production -e PORT=3000 -e HOST=0.0.0.0 -e TZ=Asia/Jerusalem \
   credit-cards-app:legacy
-# ...או לבנות מחדש מה-commit שרשמתם בסעיף 4.1:
-#   git checkout <ה-commit הישן> && docker compose up -d --build
 ```
 
-הערות: (1) ה-image הישן והמסד הישן רצים כ-root ולכן אין צורך ב-`chown` לאחר השחזור. (2) כל מה שנוצר אחרי השדרוג (משתמשים חדשים, נתונים שהוזנו) הולך לאיבוד בשחזור; שמרו את `data.failed-*` אם צריך לחלץ משם. (3) ה-cookie של הדפדפן לא תקף בגרסה הישנה, וזה בסדר. (4) אחרי שחזור, כשרוצים לנסות שוב, התחילו מסעיף 4.2 (גיבוי חדש).
+כשרוצים לנסות שוב את השדרוג (או לחזור ל-compose), קודם מסירים את הקונטיינר הידני ואחר כך חוזרים לקוד החדש (`git checkout` של הענף/התג החדש):
+
+```bash
+docker rm -f credit-cards-app
+```
+
+הערות: (1) ה-image הישן והמסד הישן רצים כ-root ולכן אין צורך ב-`chown` לאחר השחזור. (2) כל מה שנוצר אחרי השדרוג (משתמשים חדשים, נתונים שהוזנו) הולך לאיבוד בשחזור; שמרו את `data.failed-*` אם צריך לחלץ משם. (3) ה-cookie של הדפדפן לא תקף בגרסה הישנה, וזה בסדר. (4) אחרי שחזור, כשרוצים לנסות שוב, אם הרצתם `docker run` ידני הריצו קודם `docker rm -f credit-cards-app` (אחרת השם תפוס והקונטיינר הידני ימשיך לתפוס את פורט 3006), ואז התחילו מסעיף 4.2 (גיבוי חדש) ומשם 4.6 (כולל `chown -R 1000:1000 data`).
 
 ## 5. תפעול שוטף
 
@@ -275,6 +289,8 @@ docker compose run --rm --no-deps app node -e "const d=require('better-sqlite3')
 sudo chown -R 1000:1000 data
 docker compose up -d
 ```
+
+אותו כלל חל על `sudo sqlite3` שכותב ל-`data/rewards.db`: עצרו את הקונטיינר, ובסיום `sudo chown -R 1000:1000 data` לפני `docker compose up -d` (קבצי `-wal`/`-shm` בבעלות root יחסמו את הקונטיינר).
 
 ### 5.3 החלפת מפתח הצפנה (rotation)
 
@@ -322,7 +338,7 @@ docker compose ps                     # חייב להיות (healthy)
 docker inspect credit-cards-app --format '{{.State.Health.Status}} restarts={{.RestartCount}}'
 ```
 
-הודעות שכדאי להכיר: `Startup aborted: ...` (תצורה שגויה, המסד לא נגע), `WARNING: COOKIE_SECURE is on but a request arrived over plain http` (nginx בלי `X-Forwarded-Proto` או `TRUST_PROXY` שגוי), `Session cleanup: removed N expired session(s)` (תקין), `Unhandled error: ...` (באג; הלקוח מקבל רק 500 כללי), `N rows re-encrypted ...` (rotation). לוגים של Docker לא מכילים סיסמאות או טוקנים (הטוקן מוסתר גם בשגיאות RiseUp). הגדירו ניטור חיצוני פשוט (UptimeRobot / cron עם `curl -fsS https://rewards.erankam.dev/api/health`) והגבילו את גודל הלוגים (`logging: driver: json-file, options: max-size` ב-compose או `/etc/docker/daemon.json`).
+הודעות שכדאי להכיר: `Startup aborted: ...` (תצורה שגויה, המסד לא נגע), `WARNING: COOKIE_SECURE is on but a request arrived over plain http` (גישה ב-HTTP פשוט, או nginx בלי `X-Forwarded-Proto` / `TRUST_PROXY` שגוי; אזהרה בלבד), `Session cleanup: removed N expired session(s)` (תקין), `Unhandled error: ...` (באג; הלקוח מקבל רק 500 כללי), `N rows re-encrypted ...` (rotation). לוגים של Docker לא מכילים סיסמאות או טוקנים (הטוקן מוסתר גם בשגיאות RiseUp). הגדירו ניטור חיצוני פשוט (UptimeRobot / cron עם `curl -fsS https://rewards.erankam.dev/api/health`) והגבילו את גודל הלוגים (`logging: driver: json-file, options: max-size` ב-compose או `/etc/docker/daemon.json`).
 
 ### 5.7 עדכון גרסה
 

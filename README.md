@@ -53,7 +53,10 @@ npm run dev
 npm test --workspace=server      # vitest + supertest, מסד בזיכרון
 npm test --workspace=client      # vitest + Testing Library
 npm run build                    # לקוח ואז שרת
-scripts/smoke-test.sh http://localhost:3001   # בדיקת עשן לשרת רץ (ראו DEPLOY.md סעיף 4.8)
+# בדיקת עשן לשרת רץ (ראו DEPLOY.md סעיף 4.8). הבדיקות של ה-SPA דורשות build של הלקוח
+# (client/dist, אחרי npm run build) ושהשרת עצמו מגיש אותו, כלומר :3001 ולא שרת vite (:5173).
+# באפשרות --no-register אין יצירת משתמש; בלי HTTPS המשתנה COOKIE_SECURE=false נדרש בשרת.
+scripts/smoke-test.sh http://localhost:3001
 ```
 
 ## אבטחה
