@@ -8,7 +8,8 @@
 # Anonymous checks (always): /api/health = 200, anonymous /api/cards = 401, security headers
 # (CSP, X-Content-Type-Options, Cache-Control no-store on /api), SPA shell, cross-site POST = 403.
 #
-# Account checks (skipped with --no-register): registers a throwaway user, then runs
+# Account checks (skipped with --no-register, or when SMOKE_INVITE is unset because registration is
+# invite-only: pass a single-use invite token, e.g. SMOKE_INVITE=<token>): registers a throwaway user, then runs
 # me -> logout -> me, and verifies the session cookie flags (HttpOnly, SameSite, Secure on https)
 # and that the OLD cookie value is rejected after logout (server-side revocation).
 #
@@ -32,6 +33,10 @@ for arg in "$@"; do
     *) BASE_URL="$arg" ;;
   esac
 done
+if [ "$REGISTER" = 1 ] && [ -z "${SMOKE_INVITE:-}" ]; then
+  echo "Note: registration is invite-only and SMOKE_INVITE is not set; account checks will be skipped." >&2
+  REGISTER=0
+fi
 if [ -z "$BASE_URL" ]; then
   echo "Usage: $0 BASE_URL [--no-register]" >&2
   exit 2
@@ -136,7 +141,7 @@ if [ "$REGISTER" -eq 1 ]; then
   # Secrets never go in curl's argv (visible in `ps`): the credentials JSON is read from a file
   # (--data @file) and session cookies are sent via a header file (-H @file). $TMP is mode 700.
   CRED="$TMP/cred.json"
-  ( umask 077; printf '{"email":"%s","password":"%s"}' "$EMAIL" "$PASSWORD" >"$CRED" )
+  ( umask 077; printf '{"email":"%s","password":"%s","invite":"%s"}' "$EMAIL" "$PASSWORD" "${SMOKE_INVITE:-}" >"$CRED" )
   cookie_hdr() { ( umask 077; printf 'Cookie: %s=%s\n' "$1" "$2" >"$TMP/cookie-hdr" ); }
   ORIGIN_HDR="Origin: $ORIGIN"
 

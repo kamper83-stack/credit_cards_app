@@ -39,10 +39,11 @@ export function lookupSession(db: Database.Database, cfg: AuthConfig, token: str
   if (!isWellFormedToken(token)) return null;
   const th = hashToken(token);
   const row = db.prepare(`
-    SELECT s.last_seen, s.expires_at, u.id, u.email, u.is_admin
+    SELECT s.last_seen, s.expires_at, u.id, u.email, u.is_admin, u.disabled_at
     FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?
-  `).get(th) as { last_seen: number; expires_at: number; id: string; email: string; is_admin: number } | undefined;
+  `).get(th) as { last_seen: number; expires_at: number; id: string; email: string; is_admin: number; disabled_at: number | null } | undefined;
   if (!row) return null;
+  if (row.disabled_at) return null; // disabled accounts have no valid session (their rows are also deleted on disable)
   const t = seconds(cfg);
   if (t >= row.expires_at || t - row.last_seen >= cfg.idleSeconds) {
     db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(th);

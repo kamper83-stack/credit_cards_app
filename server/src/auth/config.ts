@@ -15,6 +15,9 @@ export interface AuthOptions {
   /** Per-IP registration limit (default env REGISTER_RATE_LIMIT_MAX or 10). */
   registerIpMax?: number;
   registerWindowMs?: number;
+  /** Per-IP limit of invalid-invite registration attempts (default env INVITE_FAIL_RATE_LIMIT_MAX or 10). */
+  inviteFailMax?: number;
+  inviteFailWindowMs?: number;
 }
 
 export interface AuthConfig {
@@ -34,6 +37,8 @@ export interface AuthConfig {
   loginWindowMs: number;
   registerIpMax: number;
   registerWindowMs: number;
+  inviteFailMax: number;
+  inviteFailWindowMs: number;
 }
 
 export const IDLE_SECONDS = 7 * 24 * 3600;
@@ -82,5 +87,7 @@ export function resolveAuthConfig(o: AuthOptions = {}, env: NodeJS.ProcessEnv = 
     loginWindowMs: o.loginWindowMs ?? envNum(env.LOGIN_RATE_LIMIT_WINDOW_MS) ?? 15 * 60 * 1000,
     registerIpMax: o.registerIpMax ?? envNum(env.REGISTER_RATE_LIMIT_MAX) ?? 10,
     registerWindowMs: o.registerWindowMs ?? envNum(env.REGISTER_RATE_LIMIT_WINDOW_MS) ?? 60 * 60 * 1000,
+    inviteFailMax: o.inviteFailMax ?? envNum(env.INVITE_FAIL_RATE_LIMIT_MAX) ?? 10,
+    inviteFailWindowMs: o.inviteFailWindowMs ?? envNum(env.INVITE_FAIL_RATE_LIMIT_WINDOW_MS) ?? 60 * 60 * 1000,
   };
 }

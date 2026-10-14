@@ -8,6 +8,7 @@ import { clearSessionCookie, setSessionCookie } from '../auth/cookies.js';
 import { createAuthLimiters, normalizeEmail } from '../auth/limiters.js';
 import { requireAuth } from '../auth/middleware.js';
 import { checkPassword } from '../auth/passwordPolicy.js';
+import { consumeInvite, INVITE_ERROR } from '../auth/invites.js';
 import { createSession, revokeAllSessions, revokeSession, rotateSession } from '../auth/sessions.js';
 
 export const LOCKOUT_THRESHOLD = 5;
@@ -19,7 +20,7 @@ const INVALID_INPUT = 'פרטים לא תקינים';
 const EmailSchema = z.string().transform((s) => s.trim().toLowerCase())
   .pipe(z.string().max(254).regex(/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/));
 
-const RegisterSchema = z.object({ email: EmailSchema, password: z.string().min(1).max(1024) });
+const RegisterSchema = z.object({ email: EmailSchema, password: z.string().min(1).max(1024), invite: z.unknown().optional() });
 const LoginSchema = z.object({ email: z.string().max(254), password: z.string().min(1).max(1024) });
 const ChangeSchema = z.object({ currentPassword: z.string().min(1).max(1024), newPassword: z.string().min(1).max(1024) });
 
@@ -30,6 +31,7 @@ interface UserRow {
   is_admin: number;
   failed_attempts: number | null;
   locked_until: number | null;
+  disabled_at: number | null;
 }
 
 export function createAuthRouter(db: Database.Database, cfg: AuthConfig): Router {
@@ -76,29 +78,45 @@ export function createAuthRouter(db: Database.Database, cfg: AuthConfig): Router
     setSessionCookie(res, cfg, token);
   };
 
-  // Registration is open. With no email verification, a duplicate email is answered with an explicit
-  // 409 (accepted enumeration tradeoff: a generic reply would need an out-of-band channel); the
-  // endpoint is rate limited per IP, and argon2 is run before the uniqueness check so timing
-  // does not distinguish new from existing addresses.
-  router.post('/register', limits.registerIp, async (req, res, next) => {
+  // Registration is invite-only. The invite is consumed in the same transaction as the user insert,
+  // so a failed insert (duplicate email) never burns a use, and concurrent attempts cannot exceed
+  // max_uses. Unknown / expired / revoked / exhausted / missing invites all give the same 400, after
+  // the same argon2 work, and count against a per-IP invalid-invite limiter (token guessing).
+  // A duplicate email is answered with an explicit 409 (accepted enumeration tradeoff; it needs a
+  // valid invite first).
+  router.post('/register', limits.registerIp, limits.inviteFailIp, async (req, res, next) => {
     try {
       const parsed = RegisterSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: INVALID_INPUT });
       const { email, password } = parsed.data;
+      const invite = typeof parsed.data.invite === 'string' ? parsed.data.invite : '';
       const policy = checkPassword(password, email);
       if (policy) return res.status(400).json({ error: policy });
 
       const passwordHash = await hashPassword(password);
       const id = randomUUID();
-      try {
-        db.prepare(`INSERT INTO users (id, email, password_hash, is_admin, created_at) VALUES (?, ?, ?, 0, ?)`)
-          .run(id, email, passwordHash, nowSec());
-      } catch (err: any) {
-        if (typeof err?.code === 'string' && err.code.startsWith('SQLITE_CONSTRAINT')) {
-          return res.status(409).json({ error: 'כתובת האימייל כבר רשומה' });
+      type Outcome = 'ok' | 'invite' | 'duplicate';
+      const outcome: Outcome = db.transaction((): Outcome => {
+        const inviteId = consumeInvite(db, invite, nowSec());
+        if (!inviteId) return 'invite';
+        try {
+          db.prepare(`INSERT INTO users (id, email, password_hash, is_admin, created_at, invite_id) VALUES (?, ?, ?, 0, ?, ?)`)
+            .run(id, email, passwordHash, nowSec(), inviteId);
+        } catch (err: any) {
+          if (typeof err?.code === 'string' && err.code.startsWith('SQLITE_CONSTRAINT')) {
+            // Undo the consumed use; the transaction still commits nothing for this attempt.
+            db.prepare(`UPDATE invites SET used_count = used_count - 1 WHERE id = ?`).run(inviteId);
+            return 'duplicate';
+          }
+          throw err;
         }
-        throw err;
+        return 'ok';
+      })();
+      if (outcome === 'invite') {
+        res.locals.invalidInvite = true;
+        return res.status(400).json({ error: INVITE_ERROR });
       }
+      if (outcome === 'duplicate') return res.status(409).json({ error: 'כתובת האימייל כבר רשומה' });
       startSession(req, res, id);
       res.status(201).json({ id, email, isAdmin: false });
     } catch (err) {
@@ -116,7 +134,7 @@ export function createAuthRouter(db: Database.Database, cfg: AuthConfig): Router
       if (!parsed.success) return res.status(400).json({ error: INVALID_INPUT });
       const email = normalizeEmail(parsed.data.email)!;
       const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email) as UserRow | undefined;
-      const usable = !!user && !isLocked(user);
+      const usable = !!user && !isLocked(user) && !user.disabled_at;
 
       const ok = await verifyPassword(usable ? user!.password_hash : await dummyHash(), parsed.data.password);
       if (!user || !usable || !ok) {

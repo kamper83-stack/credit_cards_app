@@ -9,6 +9,7 @@ vi.mock('../src/riseup.js', async (importOriginal) => {
 });
 
 import { createApp, isPublicApiRoute } from '../src/app.js';
+import { newInvite } from './helpers.js';
 import db from '../src/db.js';
 import { encryptPat } from '../src/crypto.js';
 import { activeRiseupOperations } from '../src/routes/riseup.js';
@@ -50,7 +51,7 @@ class Client {
 }
 
 async function registerUser(email: string): Promise<Client> {
-  const res = await request(app).post('/api/auth/register').set('Origin', ORIGIN).send({ email, password: PW });
+  const res = await request(app).post('/api/auth/register').set('Origin', ORIGIN).send({ email, password: PW, invite: newInvite() });
   expect(res.status).toBe(201);
   const cookie = (res.headers['set-cookie'] as unknown as string[])[0].split(';')[0];
   return new Client(res.body.id, email, cookie);
@@ -720,7 +721,7 @@ describe('default-deny route protection', () => {
 
     it('the shapes really exist: signed-in users reach them (so the 401s above come from the guard)', async () => {
       const email = 'bypass@example.com';
-      const reg = await request(bypassApp).post('/api/auth/register').set('Origin', ORIGIN).send({ email, password: PW });
+      const reg = await request(bypassApp).post('/api/auth/register').set('Origin', ORIGIN).send({ email, password: PW, invite: newInvite() });
       const cookie = (reg.headers['set-cookie'] as unknown as string[])[0].split(';')[0];
       for (const url of ['/api/dump', '/api/subapp', '/api/subapp/deep', '/api/nested/inner/leak', '/api/healthdump']) {
         const res = await request(bypassApp).get(url).set('Origin', ORIGIN).set('Cookie', cookie);

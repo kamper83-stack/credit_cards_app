@@ -3,6 +3,7 @@ import request from 'supertest';
 import express from 'express';
 import { createHash } from 'crypto';
 import { createApp, type AppOptions } from '../src/app.js';
+import { newInvite } from './helpers.js';
 import db from '../src/db.js';
 import { resolveAuthConfig } from '../src/auth/config.js';
 import { sessionLoader, requireAuth, requireAdmin } from '../src/auth/middleware.js';
@@ -47,7 +48,7 @@ const tokenOf = (cookie: string) => cookie.split('=')[1];
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
 async function register(app: App, email = newEmail(), password = PW) {
-  const res = await post(app, '/api/auth/register', { email, password });
+  const res = await post(app, '/api/auth/register', { email, password, invite: newInvite() });
   return { res, email, cookie: cookieOf(res) };
 }
 
@@ -118,23 +119,23 @@ describe('password policy and duplicates', () => {
     const email = newEmail();
     const bad = ['short1', 'x'.repeat(129), 'Password123', '1234567890', email.toUpperCase()];
     for (const password of bad) {
-      const res = await post(app, '/api/auth/register', { email, password });
+      const res = await post(app, '/api/auth/register', { email, password, invite: newInvite() });
       expect(res.status, password.slice(0, 12)).toBe(400);
     }
-    expect((await post(app, '/api/auth/register', { email, password: 'x'.repeat(128) })).status).toBe(201);
+    expect((await post(app, '/api/auth/register', { email, password: 'x'.repeat(128), invite: newInvite() })).status).toBe(201);
   });
 
   it('rejects malformed emails', async () => {
     const { app } = make();
     for (const e of ['nope', 'a@b', 'a b@c.com', `${'a'.repeat(250)}@x.com`, 5, null]) {
-      expect((await post(app, '/api/auth/register', { email: e, password: PW })).status).toBe(400);
+      expect((await post(app, '/api/auth/register', { email: e, password: PW, invite: newInvite() })).status).toBe(400);
     }
   });
 
   it('returns 409 for a duplicate email (case-insensitive) without logging in', async () => {
     const { app } = make();
     const { email } = await register(app);
-    const dup = await post(app, '/api/auth/register', { email: email.toUpperCase(), password: PW });
+    const dup = await post(app, '/api/auth/register', { email: email.toUpperCase(), password: PW, invite: newInvite() });
     expect(dup.status).toBe(409);
     expect(dup.body.error).toBe('כתובת האימייל כבר רשומה');
     expect(dup.headers['set-cookie']).toBeUndefined();
@@ -230,7 +231,7 @@ describe('login', () => {
     for (let i = 0; i < 3; i++) s.push((await post(app, '/api/auth/login', { email: newEmail(), password: 'x' })).status);
     expect(s).toEqual([401, 401, 429]);
     const r = [];
-    for (let i = 0; i < 3; i++) r.push((await post(app, '/api/auth/register', { email: newEmail(), password: PW })).status);
+    for (let i = 0; i < 3; i++) r.push((await post(app, '/api/auth/register', { email: newEmail(), password: PW, invite: newInvite() })).status);
     expect(r).toEqual([201, 201, 429]);
   });
 });
@@ -397,7 +398,7 @@ describe('password normalisation and shape', () => {
   it('rejects whitespace-only and NUL-containing passwords', async () => {
     const { app } = make();
     for (const password of [' '.repeat(12), '\t\u00a0 \n'.repeat(4), 'valid pass\u0000word']) {
-      expect((await post(app, '/api/auth/register', { email: newEmail(), password })).status).toBe(400);
+      expect((await post(app, '/api/auth/register', { email: newEmail(), password, invite: newInvite() })).status).toBe(400);
     }
     expect(checkPassword(' '.repeat(20))).not.toBeNull();
     expect(checkPassword('abc\u0000defghijk')).not.toBeNull();

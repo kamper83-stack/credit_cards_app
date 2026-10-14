@@ -112,6 +112,31 @@ export function initSchema(db: Database.Database): void {
     db.exec(`ALTER TABLE sync_log ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE`);
   }
 
+  // Invite-only registration (phase 7). Existing users stay enabled (disabled_at NULL).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS invites (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      label TEXT,
+      max_uses INTEGER NOT NULL DEFAULT 1 CHECK(max_uses BETWEEN 1 AND 100),
+      used_count INTEGER NOT NULL DEFAULT 0,
+      expires_at INTEGER NOT NULL,
+      revoked_at INTEGER,
+      created_by TEXT REFERENCES users(id),
+      created_at INTEGER DEFAULT (unixepoch())
+    );
+    CREATE TABLE IF NOT EXISTS admin_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_user_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target TEXT,
+      at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+  `);
+  const userCols = columns('users');
+  if (!userCols.has('disabled_at')) db.exec(`ALTER TABLE users ADD COLUMN disabled_at INTEGER`);
+  if (!userCols.has('invite_id')) db.exec(`ALTER TABLE users ADD COLUMN invite_id TEXT REFERENCES invites(id)`);
+
   // RiseUp accounts are unique per user (two users may sync the same account hash).
   db.exec(`
     DROP INDEX IF EXISTS idx_cards_riseup_account;

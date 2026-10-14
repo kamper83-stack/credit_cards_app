@@ -12,6 +12,7 @@ import transactionsRouter from './routes/transactions.js';
 import riseupRouter from './routes/riseup.js';
 import db from './db.js';
 import { createAuthRouter } from './routes/auth.js';
+import { createAdminRouter } from './routes/admin.js';
 import { resolveAuthConfig, type AuthOptions } from './auth/config.js';
 import { csrfProtection } from './auth/csrf.js';
 import { sessionLoader, requireAuth } from './auth/middleware.js';
@@ -123,6 +124,7 @@ export function createApp(options: AppOptions = {}) {
   app.use('/api', (req, res, next) => (isPublicApiRoute(req.method, req.path) ? next() : requireAuth(req, res, next)));
 
   app.use('/api/auth', createAuthRouter(db, authConfig));
+  app.use('/api/admin', createAdminRouter(db, authConfig));
   app.use('/api/cards', cardsRouter);
   app.use('/api/goals', goalsRouter);
   app.use('/api/transactions', transactionsRouter);

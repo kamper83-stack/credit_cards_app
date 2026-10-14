@@ -37,6 +37,14 @@ export function createAuthLimiters(cfg: AuthConfig) {
         return email ? `email:${email.slice(0, 254)}` : ipKeyGenerator(req.ip ?? '');
       },
     }),
+    // Counts only registrations rejected for an invalid invite (handler sets res.locals.invalidInvite),
+    // so tokens cannot be guessed; valid registrations and other errors do not consume this quota.
+    inviteFailIp: rateLimit({
+      ...common, windowMs: cfg.inviteFailWindowMs, limit: cfg.inviteFailMax,
+      keyGenerator: (req) => ipKeyGenerator(req.ip ?? ''),
+      requestWasSuccessful: (_req, res) => !res.locals.invalidInvite,
+      skipSuccessfulRequests: true,
+    }),
     registerIp: rateLimit({
       ...common, windowMs: cfg.registerWindowMs, limit: cfg.registerIpMax,
       keyGenerator: (req) => ipKeyGenerator(req.ip ?? ''),

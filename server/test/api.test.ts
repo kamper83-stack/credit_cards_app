@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { randomBytes } from 'crypto';
 import { createApp } from '../src/app.js';
+import { newInvite } from './helpers.js';
 import db from '../src/db.js';
 import { encryptPat } from '../src/crypto.js';
 
@@ -31,7 +32,7 @@ describe('API', () => {
     const res = await request(app).post('/api/cards').set('Host', 'localhost:5173').set('Origin', ORIGIN).send({ name: 'x' });
     expect(res.status).toBe(401);
     expect((db.prepare(`SELECT COUNT(*) n FROM cards`).get() as any).n).toBe(0);
-    const reg = await request(app).post('/api/auth/register').set('Origin', ORIGIN).send({ email: 'owner@example.com', password: 'correct horse battery' });
+    const reg = await request(app).post('/api/auth/register').set('Origin', ORIGIN).send({ email: 'owner@example.com', password: 'correct horse battery', invite: newInvite() });
     expect(reg.status).toBe(201);
     ownerId = reg.body.id;
     cookie = (reg.headers['set-cookie'] as unknown as string[])[0].split(';')[0];

@@ -312,6 +312,17 @@ printf '%s\n' 'הסיסמה-החדשה' | docker compose exec -T app node server
 
 ה-CLI משתמש במשתני הסביבה של הקונטיינר (נדרש `TOKEN_ENC_KEY` כשיש טוקנים שמורים). ללא Docker: `npm run build --workspace=server && npm run reset-password --workspace=server -- user@example.com` (ב-`server/` עם `.env`).
 
+### 5.4.1 הזמנות (הרשמה בהזמנה בלבד)
+
+ההרשמה סגורה בלי הזמנה: `POST /api/auth/register` דורש טוקן הזמנה תקף (תפוגה 1-90 ימים, 1-100 שימושים, ניתן לביטול). משתמשים קיימים לא מושפעים. אחרי השדרוג יוצרים את ההזמנה הראשונה מה-CLI (דורש מנהל קיים; הקישור מודפס פעם אחת ורק ה-hash נשמר), ואחר כך אפשר דרך ה-API של המנהל (`/api/admin/invites`):
+
+```bash
+docker compose exec app node server/dist/cli/create-invite.js --days 7 --uses 1 --label "שם"
+# מדפיס: /register?invite=<token>  -> מצרפים לכתובת האתר: https://rewards.erankam.dev/register?invite=<token>
+```
+
+ללא Docker: `npm run build --workspace=server && npm run create-invite --workspace=server -- --days 7 --uses 1`. השבתת משתמש (`POST /api/admin/users/:id/disable`) מנתקת אותו מיד וחוסמת כניסה; `enable` מחזיר. פעולות הזמנה/השבתה נרשמות בטבלה `admin_audit`. בדיקת העשן יוצרת משתמש רק כש-`SMOKE_INVITE=<טוקן חד-פעמי>` מוגדר; אחרת היא מדלגת על בדיקות החשבון.
+
 ### 5.5 אם `TOKEN_ENC_KEY` אבד
 
 הסימפטום: `Startup aborted: Cannot decrypt the stored RiseUp token ...`.

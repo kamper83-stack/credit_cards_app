@@ -8,6 +8,8 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "reset-password": "node dist/cli/reset-password.js",
+    "create-invite": "node dist/cli/create-invite.js",
+    "create-invite:dev": "tsx src/cli/create-invite.ts",
     "reset-password:dev": "tsx src/cli/reset-password.ts"
   },
   "dependencies": {
