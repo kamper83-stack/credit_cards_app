@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-מעקב הטבות כרטיסי אשראי — a personal credit-card rewards tracker. Users define spending goals per card (e.g. "spend ₪3,000 this month for cashback") and the app tracks progress against them. Transactions are either synced automatically from RiseUp (Israeli budgeting service) via its official MCP server, or entered manually. All data is local (SQLite); nothing leaves the machine except calls to RiseUp itself. The UI is in Hebrew (RTL content, LTR layout).
+מעקב הטבות כרטיסי אשראי — a multi-user credit-card rewards tracker. Each user (email + password account, open registration) defines spending goals per card (e.g. "spend ₪3,000 this month for cashback") and the app tracks progress against them. Transactions are either synced automatically from RiseUp (Israeli budgeting service) via its official MCP server, using the user's own RiseUp token (stored AES-256-GCM-encrypted), or entered manually. Data is in a local SQLite file, strictly isolated per user; nothing leaves the server except calls to RiseUp itself. Production runs in Docker behind a host nginx with TLS (https://rewards.erankam.dev). The UI is in Hebrew (RTL content, LTR layout).
 
 npm workspaces monorepo: `client` (React SPA) and `server` (Express API), plus a top-level orchestrator `package.json`.
 
@@ -17,7 +17,14 @@ npm install && cd server && npm install && cd ../client && npm install  # first-
 npm run dev            # runs server (tsx watch) + client (vite) concurrently
 npm run build           # builds client then server
 npm start                # runs the built server (dist/index.js)
+npm test --workspace=server   # vitest + supertest (in-memory SQLite)
+npm test --workspace=client   # vitest + Testing Library + jsdom
+npm run reset-password --workspace=server -- <email>   # admin CLI (needs the built server); Docker: docker compose exec app node server/dist/cli/reset-password.js <email>
+scripts/smoke-test.sh <BASE_URL> [--no-register]       # post-deploy smoke test (bash + curl)
+docker compose build && docker compose up -d           # production image (see deploy/DEPLOY.md)
 ```
+
+A fresh database needs no configuration in dev; `TOKEN_ENC_KEY` is needed to save a RiseUp token, and `ADMIN_EMAIL`/`ADMIN_PASSWORD` only to upgrade a pre-multi-user DB. `.env.example` is the single reference for every env var (keep it in sync when adding `process.env.X`).
 
 Client dev server: http://localhost:5173 (proxies `/api` to `http://localhost:3001`).
 Server dev: http://localhost:3001.
@@ -30,9 +37,7 @@ npm run dev --workspace=client     # vite
 npm run build --workspace=client   # tsc && vite build -> client/dist
 ```
 
-Server tests (vitest + supertest, in-memory SQLite via `DB_PATH=:memory:`): `npm test --workspace=server`.
-
-Client tests: `npm test --workspace=client` (vitest + Testing Library + jsdom, `client/src/__tests__/`; run in CI). There is no linter configured in this repo.
+Server tests use in-memory SQLite (`DB_PATH=:memory:`); client tests live in `client/src/__tests__/`. CI (`.github/workflows/ci.yml`) runs build + both suites, and a separate `docker-build` job that builds the image, checks native modules/non-root user and runs `scripts/smoke-test.sh` against the container. There is no linter configured in this repo.
 
 ## Architecture
 
@@ -46,7 +51,7 @@ Grouping key: `accountKey()` uses `transaction.accountNumberHash` when present (
 
 ### Server
 
-- `server/src/db.ts` — single `better-sqlite3` connection (`data/rewards.db` at repo root), synchronous queries throughout. Schema is created inline with `CREATE TABLE IF NOT EXISTS` plus ad-hoc `ALTER TABLE ... ADD COLUMN` guards for backward-compatible migrations (no migration framework — new columns need a matching guard block here).
+- `server/src/db.ts` — single `better-sqlite3` connection (`data/rewards.db` at repo root, `/app/data/rewards.db` in Docker; override with `DB_PATH`), synchronous queries throughout. Schema is created inline with `CREATE TABLE IF NOT EXISTS` plus ad-hoc `ALTER TABLE ... ADD COLUMN` guards for backward-compatible migrations (no migration framework — new columns need a matching guard block here).
 - `server/src/crypto.ts` (AES-256-GCM PAT encryption, AAD = user id, key from `TOKEN_ENC_KEY`, rotation via `TOKEN_ENC_KEY_VERSION`/`TOKEN_ENC_KEY_PREV`), `password.ts` (argon2id via `@node-rs/argon2`, prebuilt incl. musl), `migrate.ts` (legacy backup + async `runStartupMigrations()`, awaited in `index.ts` before listen).
 - Multi-user schema (phase 2): `users`, `sessions`, `user_riseup`; `cards` and `sync_log` have `user_id`; `cards` is unique on `(user_id, riseup_account_id)`; `transactions` PK is `(card_id, id)` (RiseUp ids are not globally unique). Foreign keys are ON, WAL mode, DB file chmod 600.
 - **Auth (phase 3)** — `server/src/auth/` + `routes/auth.ts` (mounted at `/api/auth`: `register`, `login`, `logout`, `me`, `change-password`).
@@ -54,7 +59,7 @@ Grouping key: `accountKey()` uses `transaction.accountNumberHash` when present (
   - Cookie name/flags: `COOKIE_SECURE` (default true in production, false otherwise) => `__Host-sid` + Secure, else `sid`. Plain-HTTP production (Tailscale) needs `COOKIE_SECURE=false`.
   - `sessionLoader` (global on `/api`) sets `req.user`; `requireAuth` (401) / `requireAdmin` (403) live in `auth/middleware.ts`. Routers do NOT mount `requireAuth` individually: `app.ts` has a default-deny guard on `/api` (see phase 4).
   - CSRF (`auth/csrf.ts`, all non-GET/HEAD/OPTIONS under `/api`): Origin must match the request Host (or `ALLOWED_ORIGINS`/`CLIENT_URL`); else Referer; else `Sec-Fetch-Site` same-origin/none; else 403. Bodies must be `application/json` (415). Non-browser clients must send an `Origin` header. Runs before `express.json`.
-  - Login: generic 401 `אימייל או סיסמה שגויים` for wrong password / unknown email / locked account (dummy argon2 verify keeps timing equal). 5 consecutive failures lock the account (`users.failed_attempts/locked_until`) for 1m, 2m, 4m ... max 15m; failures while locked are not counted; success resets. Register returns 409 for a duplicate email (accepted enumeration tradeoff, rate limited). Password policy: 10-128 chars, not the email, not in a small common list (`auth/passwordPolicy.ts`).
+  - Login: generic 401 `אימייל או סיסמה שגויים` for wrong password / unknown email / locked account (dummy argon2 verify keeps timing equal). 5 consecutive failures lock the account (`users.failed_attempts/locked_until`) for 60s; once the lock expires the counter restarts from zero; failures while locked are not counted; success resets. Register returns 409 for a duplicate email (accepted enumeration tradeoff, rate limited). Password policy: 10-128 chars, not the email, not in a small common list (`auth/passwordPolicy.ts`).
   - Rate limits (`auth/limiters.ts`, env in `.env.example`): login per IP 20 + per email 10 / 15 min, register per IP 10 / hour, plus the general `/api` limiter.
   - Admin password reset: `npm run build --workspace=server && npm run reset-password --workspace=server -- <email>` (hidden prompt / stdin; revokes sessions, clears lockout). Tests inject `now`, `cookieSecure`, `allowedOrigins`, limiter maxes via `createApp()` options.
 - **Per-user data isolation (phase 4) — security-critical, keep when editing routes.**
@@ -65,7 +70,7 @@ Grouping key: `accountKey()` uses `transaction.accountNumberHash` when present (
   - RiseUp (`routes/riseup.ts`): PAT in `user_riseup` (encrypted), responses carry only the masked preview (`riseup_pat_...` + last 4). One in-flight RiseUp operation per user (409) and a global cap of `RISEUP_MAX_CONCURRENT` (default 3) simultaneous MCP subprocesses (503 + Retry-After); in-memory, so single-process only. The 24h auto-sync throttle is per user. `DELETE /token` removes only the token; already-synced cards/transactions/goals are kept.
   - Secret hygiene (`riseup.ts`): the MCP child gets a minimal env (`buildChildEnv`: `RISEUP_PAT` + proxy/CA/tmp allow-list; the SDK adds HOME/PATH/USER/...; never `TOKEN_ENC_KEY`, `ADMIN_*`, DB path). Client-facing RiseUp errors are fixed Hebrew messages by category (`RiseupError`: auth/network/timeout/unknown); detail goes to the server log only, passed through `redactSecrets` (strips `riseup_pat_...`). Never return `err.message` from the MCP/SDK.
   - Tests: `server/test/isolation.test.ts` (two users, every route/method, shared RiseUp transaction ids, leak scans, sanitized errors) includes a **route-inventory test** that walks the Express router stack and checks that arbitrary routes (via the `extraApiRoutes` test hook) cannot bypass the guard. `server/test/riseup.test.ts` asserts the MCP child env and error redaction.
-- `server/src/index.ts` — Express app wiring; one router per resource under `/api/{cards,goals,transactions,riseup}`.
+- `server/src/app.ts` — `createApp()`: helmet/CSP, `/api` no-store, CSRF, rate limits, session loader, default-deny guard, one router per resource under `/api/{auth,cards,goals,transactions,riseup}`, SPA static serving. `server/src/index.ts` only awaits `runStartupMigrations()`, starts session cleanup and listens.
 - Routers (`server/src/routes/*.ts`) validate request bodies with `zod` and talk to SQLite directly — no service/repository layer.
 - **Goal progress is computed on read, not stored.** `GET /api/goals` derives the current period's date range from `period_type` (`getPeriodDates` in `goals.ts`: monthly/quarterly/yearly windows are computed from "now"; `custom` uses the stored `period_start`/`period_end`), then sums the user's own matching transactions (installment rows are currently included; the sum is joined to `cards.user_id`) to get `spent`, `progress`, `remaining`, `days_left`. There's no cron/scheduled recompute.
 
@@ -80,11 +85,17 @@ Grouping key: `accountKey()` uses `transaction.accountNumberHash` when present (
 
 ### Deployment
 
-The deployment is documented in [deploy/DEPLOY.md](deploy/DEPLOY.md):
-- Server + client together (the server also serves the built client) on a private VPS reachable only via Tailscale (nginx reverse-proxies `/api` to the Node process; `pm2` via `deploy/ecosystem.config.cjs` keeps it running; server binds `HOST=127.0.0.1` so it's never reachable except through nginx). Accounts, sessions and per-user data isolation are in place (phases 3-4); see DEPLOY.md for what is still required before exposing this beyond Tailscale.
+Documented in [deploy/DEPLOY.md](deploy/DEPLOY.md) (Hebrew; architecture/security overview, fresh install, **upgrade runbook from the legacy single-user DB**, backups, key rotation/loss, monitoring, manual GitHub settings):
+- **Primary:** Docker (`Dockerfile`, `docker-compose.yml`) with host nginx on https://rewards.erankam.dev (template `deploy/nginx-docker.conf.example`). The Node server serves both the SPA and `/api`. The image runs as the non-root `node` user (uid 1000), so the bind-mounted `./data` must be `chown -R 1000:1000`; secrets come from a `.env` next to `docker-compose.yml` (chmod 600), passed through by name. The Dockerfile build fails if `@node-rs/argon2` (musl prebuilt), `better-sqlite3` or `@riseup-oss/mcp` cannot be loaded.
+- **Alternative:** pm2 (`deploy/ecosystem.config.cjs`) + nginx (`deploy/nginx-app.conf.example`, `nginx-security-headers.conf`) on a Tailscale-only VPS; plain HTTP there, hence `COOKIE_SECURE=false`.
+- GitHub Pages hosting is retired (no `base` override, no gh-pages branch); disabling Pages in the repo settings is a manual step listed in DEPLOY.md.
+- Any change to env vars: update `.env.example`, `docker-compose.yml` (pass-through list) and DEPLOY.md together. Docker healthcheck hits `/api/health` over plain http, which the insecure-cookie warning intentionally ignores.
 
 ### Security notes specific to this app
 
-- The RiseUp PAT is stored encrypted (AES-256-GCM, per-user AAD) in `user_riseup`; `TOKEN_ENC_KEY` is required (`openssl rand -base64 32`). Upgrading a legacy DB moves the plaintext PAT out of `settings` and needs `ADMIN_EMAIL`/`ADMIN_PASSWORD` once; a read-only pre-flight (`preflight()` in `migrate.ts`, run by `openDatabase` before any backup or schema change) refuses to start, leaving the DB untouched, if the key/admin env is unusable; a one-time `rewards.db.bak-<timestamp>` copy (0600, still containing the old plaintext PAT) is then left next to the DB - delete it once verified. Rows on an older key version are re-encrypted lazily and at startup (see rotation in deploy/DEPLOY.md). The PAT is read-only and 30-day-expiring by design on RiseUp's side.
-- `GET /api/cards` explicitly strips the `credentials` column from responses (`{ ...c, credentials: undefined }`) — preserve this if that query changes.
+- Passwords: argon2id; sessions: opaque HttpOnly cookie, SHA-256 in DB; registration is open and rate limited. There is no email verification and no account deletion endpoint (the smoke test leaves a `smoke-*@example.com` user behind).
+- The RiseUp PAT is stored per user, encrypted (AES-256-GCM, AAD = user id) in `user_riseup`; `TOKEN_ENC_KEY` is required whenever any token is stored (`openssl rand -base64 32`; keep it outside the DB and its backups, losing it means deleting `user_riseup` rows and re-entering tokens). Upgrading a legacy DB moves the plaintext PAT out of `settings` and needs `ADMIN_EMAIL`/`ADMIN_PASSWORD` once; a read-only pre-flight (`preflight()` in `migrate.ts`, run by `openDatabase` before any backup or schema change) refuses to start, leaving the DB untouched, if the key/admin env is unusable; a one-time `rewards.db.bak-<timestamp>` copy (0600, still containing the old plaintext PAT) is then left next to the DB - delete it once verified. Rows on an older key version are re-encrypted lazily and at startup (see rotation in deploy/DEPLOY.md). The PAT is read-only and 30-day-expiring by design on RiseUp's side.
+- Manual DB backups (`data.bak-*`, `*.bak-*`, `backups/`) are git- and docker-ignored; keep them out of the build context because legacy ones contain the plaintext token.
+- `@riseup-oss/mcp` receives the user's PAT and runs under the server's uid (trust boundary, not isolation); it is spawned with `node` from the locked install, never `npx`.
+- Cards/transactions responses never include the `credentials` column (explicit column lists, see phase 4 notes) — preserve this if those queries change.
 - PAT format is validated server-side only, against `/^riseup_pat_[A-Za-z0-9_-]{20,}$/` (`isValidPatFormat` in `server/src/riseup.ts`) before use. The client (`Settings.tsx`) has no matching check - a malformed token round-trips to the server before being rejected.

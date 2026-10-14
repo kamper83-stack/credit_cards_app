@@ -4,12 +4,13 @@
 
 ## הרקע
 
-בניתי את האפליקציה אחרי שהצטרפתי לפלייקארד ורציתי לוודא שאני עומד ביעד המינימום לטיסה מתנה.  
-מסתבר שכמעט לכל כרטיס שלי (פלייקארד, בהצדעה, הסתדרות ועוד) יש יעד הוצאות מינימום כדי לקבל את ההטבה — ובלי מעקב פשוט קל לפספס.  
+בניתי את האפליקציה אחרי שהצטרפתי לפלייקארד ורציתי לוודא שאני עומד ביעד המינימום לטיסה מתנה.
+מסתבר שכמעט לכל כרטיס שלי (פלייקארד, בהצדעה, הסתדרות ועוד) יש יעד הוצאות מינימום כדי לקבל את ההטבה — ובלי מעקב פשוט קל לפספס.
 אז בניתי מעקב שמתחבר ל-RiseUp דרך ה-MCP הרשמי ומראה בקלות איפה עומדים ביחס ליעד של כל כרטיס.
 
 ## תכונות
 
+- **חשבונות משתמשים** - הרשמה והתחברות עם אימייל וסיסמה. לכל משתמש כרטיסים, יעדים, עסקאות וטוקן RiseUp משלו, מבודדים לחלוטין ממשתמשים אחרים
 - **סנכרון מ-RiseUp** - מתחבר לחשבון ה-RiseUp שלכם דרך שרת ה-[MCP הרשמי](https://github.com/riseup-oss/mcp) שלהם, ומזהה אוטומטית את כל כרטיסי האשראי המחוברים וההוצאות בהם
 - **יעדי הטבות** - הגדירו יעדי הוצאה חודשיים / רבעוניים / שנתיים / מותאמים אישית לכל כרטיס
 - **ויזואליזציה** - טבעות progress וגרפים לעקוב אחר ההתקדמות מול היעד
@@ -18,33 +19,63 @@
 
 ## איך זה עובד
 
-1. צרו Personal Access Token (PAT) בעמוד ה-[Developer Tokens](https://input.riseup.co.il/developer/tokens) של RiseUp
-2. הזינו את הטוקן בעמוד **הגדרות** באפליקציה
-3. לחצו "סנכרן עכשיו" - האפליקציה שולפת את שלושת החודשים האחרונים, מזהה את כרטיסי האשראי (`sourceType: "creditCard"`) ויוצרת/מעדכנת אותם אוטומטית
-4. הוסיפו יעדי הטבה לכל כרטיס ועקבו אחרי ההתקדמות בדשבורד
+1. נרשמים ומתחברים לאפליקציה
+2. יוצרים Personal Access Token (PAT) בעמוד ה-[Developer Tokens](https://input.riseup.co.il/developer/tokens) של RiseUp ומזינים אותו בעמוד **הגדרות**
+3. לוחצים "סנכרן עכשיו" - האפליקציה שולפת את שלושת החודשים האחרונים, מזהה את כרטיסי האשראי (`sourceType: "creditCard"`) ויוצרת/מעדכנת אותם אוטומטית
+4. מוסיפים יעדי הטבה לכל כרטיס ועוקבים אחרי ההתקדמות בדשבורד
 
-השרת מריץ את `@riseup-oss/mcp` כתהליך MCP מקומי (stdio), עם ה-PAT כמשתנה סביבה - הטוקן לא נשלח לשום מקום חוץ מ-RiseUp עצמם.
+השרת מריץ את `@riseup-oss/mcp` כתהליך MCP מקומי (stdio), עם ה-PAT של המשתמש כמשתנה סביבה. הטוקן לא נשלח לשום מקום חוץ מ-RiseUp עצמם.
 
-## התקנה
+## התקנה לפיתוח
+
+דרישות: Node.js 20 ומעלה (בדוקר: 22).
 
 ```bash
-# התקן dependencies
-npm install
-cd server && npm install
-cd ../client && npm install
+npm install && cd server && npm install && cd ../client && npm install
+npm run dev
+```
 
-# הפעל development
-cd .. && npm run dev
-הפרונטאנד יעלה על http://localhost:5173
-הבקאנד יעלה על http://localhost:3001
+- הלקוח: http://localhost:5173 (ה-proxy של Vite מעביר את `/api` לשרת)
+- השרת: http://localhost:3001
 
+**מסד נתונים חדש לא דורש שום הגדרה**: השרת יוצר את `data/rewards.db` לבד, ואפשר להירשם מיד. הגדרות נדרשות רק במקרים הבאים:
 
-אבטחה
+| מצב | מה להגדיר |
+|---|---|
+| שמירת טוקן RiseUp (סנכרון) | `TOKEN_ENC_KEY` ב-`server/.env` (`openssl rand -base64 32`). בלעדיו שמירת הטוקן נכשלת |
+| מסד ישן מהגרסה החד-משתמשית | `TOKEN_ENC_KEY` + `ADMIN_EMAIL` + `ADMIN_PASSWORD` (פעם אחת). ראו [deploy/DEPLOY.md](deploy/DEPLOY.md) סעיף 4 |
 
-טוקן ה-RiseUp וכל הנתונים נשמרים מקומית בלבד ב-SQLite על המחשב שלכם. הנתונים לא עוזבים את המחשב שלכם, מלבד הקריאות ל-RiseUp עצמם דרך שרת ה-MCP הרשמי שלהם.
-טוקן ה-PAT הוא read-only ופג תוקף אחרי 30 יום - ניתן לבטל אותו בכל רגע בעמוד ה-Developer Tokens.
+טבלת **כל** משתני הסביבה, עם ברירות מחדל והסברים, נמצאת במקור יחיד: [`.env.example`](.env.example). העתיקו אותו ל-`server/.env` (הקובץ לא נכנס ל-git).
 
-טכנולוגיות
-Frontend: React + TypeScript + Vite + Tailwind CSS
-Backend: Node.js + Express + SQLite
-מקור נתונים: RiseUp MCP דרך @modelcontextprotocol/sdk
+בדיקות ובנייה:
+
+```bash
+npm test --workspace=server      # vitest + supertest, מסד בזיכרון
+npm test --workspace=client      # vitest + Testing Library
+npm run build                    # לקוח ואז שרת
+scripts/smoke-test.sh http://localhost:3001   # בדיקת עשן לשרת רץ (ראו DEPLOY.md סעיף 4.8)
+```
+
+## אבטחה
+
+- **סיסמאות**: argon2id. הסשן הוא cookie אטום (`HttpOnly`, `SameSite=Lax`, עם `Secure` ו-`__Host-` ב-HTTPS) שרק ה-SHA-256 שלו נשמר במסד; פג אחרי 7 ימי חוסר פעילות או 30 יום; הגנת CSRF לפי `Origin`; נעילת חשבון והגבלות קצב על כניסה והרשמה.
+- **טוקן RiseUp**: מוצפן במסד ב-AES-256-GCM עם מפתח `TOKEN_ENC_KEY` שנמצא מחוץ למסד (ולכן גם מחוץ לגיבויים שלו). הוא לא חוזר ללקוח, וגם לא נחשף בלוגים או בהודעות שגיאה. ה-PAT עצמו הוא read-only ופג תוקף אחרי 30 יום; אפשר לבטל אותו בכל רגע ב-Developer Tokens.
+- **בידוד נתונים**: כל נתיב ב-API דורש התחברות (ברירת מחדל: חסום), וכל שאילתה מסוננת לפי המשתמש. משאב של משתמש אחר מחזיר 404.
+- **כותרות**: CSP קפדני, `nosniff`, HSTS ב-production, ו-`no-store` על כל תשובות ה-API.
+- הנתונים נשמרים ב-SQLite מקומי בשרת שלכם; מלבד הקריאות ל-RiseUp, שום דבר לא עוזב אותו.
+- המודל המלא (כולל nginx, גיבויים, החלפת מפתח ואיפוס סיסמה) ב-[deploy/DEPLOY.md](deploy/DEPLOY.md).
+
+## פריסה
+
+Docker (`docker-compose.yml`) מאחורי nginx עם HTTPS: התקנה חדשה, **שדרוג ממסד ישן** (גיבוי, מפתח הצפנה, rollback), ניטור ותחזוקה מפורטים ב-[deploy/DEPLOY.md](deploy/DEPLOY.md). שם גם החלופה עם pm2 ו-Tailscale. אין יותר פריסה ל-GitHub Pages: הלקוח מוגש מהשרת.
+
+## טכנולוגיות
+
+- Frontend: React + TypeScript + Vite + Tailwind CSS
+- Backend: Node.js + Express + SQLite (`better-sqlite3`), אימות עצמי (argon2id, sessions)
+- מקור נתונים: RiseUp MCP דרך `@modelcontextprotocol/sdk`
+- Docker: `node:22-alpine`, בניית שני שלבים, רץ כמשתמש לא-root עם HEALTHCHECK
+
+## רישיון
+
+ראו [LICENSE](LICENSE).
