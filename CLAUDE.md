@@ -38,15 +38,17 @@ Client also has `npm run deploy` (`gh-pages -d dist`) for publishing the built c
 
 ### Data flow: RiseUp sync
 
-`server/src/riseup.ts` spawns `@riseup-oss/mcp` as a local stdio MCP subprocess (via `@modelcontextprotocol/sdk`), passing the user's RiseUp Personal Access Token as an env var (`RISEUP_PAT`). It calls the `get_transactions` tool per cashflow month, filters to `sourceType === 'creditCard'` and non-income transactions, and groups them into "accounts" (cards).
+`server/src/riseup.ts` spawns `@riseup-oss/mcp` as a local stdio MCP subprocess (via `@modelcontextprotocol/sdk`), passing the user's RiseUp Personal Access Token (decrypted from `user_riseup`) as an env var (`RISEUP_PAT`). It calls the `get_transactions` tool per cashflow month, filters to `sourceType === 'creditCard'` and non-income transactions, and groups them into "accounts" (cards).
 
 Grouping key: `accountKey()` uses `transaction.accountNumberHash` when present (stable per-card hash, added in `@riseup-oss/mcp` v0.3.0), falling back to `transaction.source` (provider name only, e.g. `"isracard"`) for older server versions — meaning two same-issuer cards can only be distinguished when `accountNumberHash` is available.
 
-`server/src/routes/riseup.ts` (`PUT /token`, `POST /sync`) owns the sync flow: validates PAT format, test-connects, stores the PAT in the `settings` table, then on sync upserts one `cards` row per RiseUp account (keyed on the unique `riseup_account_id` column) and upserts `transactions` rows keyed by RiseUp's own `transactionId`. Sync results and errors are appended to `sync_log`.
+`server/src/routes/riseup.ts` (`PUT /token`, `POST /sync`) owns the sync flow: validates PAT format, test-connects, stores the PAT AES-256-GCM-encrypted in `user_riseup`, then on sync upserts one `cards` row per RiseUp account (keyed on the unique `riseup_account_id` column) and upserts `transactions` rows keyed by RiseUp's own `transactionId`. Sync results and errors are appended to `sync_log`.
 
 ### Server
 
 - `server/src/db.ts` — single `better-sqlite3` connection (`data/rewards.db` at repo root), synchronous queries throughout. Schema is created inline with `CREATE TABLE IF NOT EXISTS` plus ad-hoc `ALTER TABLE ... ADD COLUMN` guards for backward-compatible migrations (no migration framework — new columns need a matching guard block here).
+- `server/src/crypto.ts` (AES-256-GCM PAT encryption, AAD = user id, key from `TOKEN_ENC_KEY`, rotation via `TOKEN_ENC_KEY_VERSION`/`TOKEN_ENC_KEY_PREV`), `password.ts` (argon2id via `@node-rs/argon2`, prebuilt incl. musl), `migrate.ts` (legacy backup + async `runStartupMigrations()`, awaited in `index.ts` before listen).
+- Multi-user schema (phase 2; auth/route scoping come in phases 3/4): `users`, `sessions`, `user_riseup`; `cards` and `sync_log` have `user_id`; `cards` is unique on `(user_id, riseup_account_id)`; `transactions` PK is `(card_id, id)` (RiseUp ids are not globally unique). Routes still use `getLegacyOwnerId()` (TODO phase 3/4). Foreign keys are ON, WAL mode, DB file chmod 600.
 - `server/src/index.ts` — Express app wiring; one router per resource under `/api/{cards,goals,transactions,riseup}`.
 - Routers (`server/src/routes/*.ts`) validate request bodies with `zod` and talk to SQLite directly — no service/repository layer.
 - **Goal progress is computed on read, not stored.** `GET /api/goals` derives the current period's date range from `period_type` (`getPeriodDates` in `goals.ts`: monthly/quarterly/yearly windows are computed from "now"; `custom` uses the stored `period_start`/`period_end`), then sums matching transactions (excluding `type = 'installments'`) to get `spent`, `progress`, `remaining`, `days_left`. There's no cron/scheduled recompute.
@@ -65,6 +67,6 @@ Two deployment targets exist side by side, documented in [deploy/DEPLOY.md](depl
 
 ### Security notes specific to this app
 
-- The RiseUp PAT is stored in plaintext in the `settings` table (local SQLite only) and is read-only, 30-day-expiring by design on RiseUp's side.
+- The RiseUp PAT is stored encrypted (AES-256-GCM, per-user AAD) in `user_riseup`; `TOKEN_ENC_KEY` is required (`openssl rand -base64 32`). Upgrading a legacy DB moves the plaintext PAT out of `settings` and needs `ADMIN_EMAIL`/`ADMIN_PASSWORD` once; a `rewards.db.bak-<timestamp>` copy (still containing the old plaintext PAT) is left next to the DB - delete it once verified. The PAT is read-only and 30-day-expiring by design on RiseUp's side.
 - `GET /api/cards` explicitly strips the `credentials` column from responses (`{ ...c, credentials: undefined }`) — preserve this if that query changes.
 - PAT format is validated server-side only, against `/^riseup_pat_[A-Za-z0-9_-]{20,}$/` (`isValidPatFormat` in `server/src/riseup.ts`) before use. The client (`Settings.tsx`) has no matching check - a malformed token round-trips to the server before being rejected.

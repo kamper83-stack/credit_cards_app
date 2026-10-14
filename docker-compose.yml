@@ -14,6 +14,13 @@ services:
       # address, not loopback), so trust loopback + private ranges only. Never use a
       # bare hop count here: it would let direct clients spoof X-Forwarded-For.
       - TRUST_PROXY=loopback,linklocal,uniquelocal
+      # Secrets are passed through from the host environment / .env file, never inline.
+      # ADMIN_PASSWORD is only needed on the first run; remove it afterwards.
+      - TOKEN_ENC_KEY
+      - TOKEN_ENC_KEY_VERSION
+      - TOKEN_ENC_KEY_PREV
+      - ADMIN_EMAIL
+      - ADMIN_PASSWORD
     volumes:
       - ./data:/app/data
     healthcheck:
