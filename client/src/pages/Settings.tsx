@@ -1,12 +1,16 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link2, Unlink, RefreshCw, ShieldCheck, ExternalLink } from 'lucide-react';
+import { Link2, Unlink, RefreshCw, ShieldCheck, ExternalLink, KeyRound } from 'lucide-react';
 import { riseupApi } from '../api';
+import { useAuth } from '../auth/AuthContext';
+import { FormAlert, PasswordField, SubmitButton } from '../auth/AuthForm';
+import { authErrorMessage, looksLikeExpiredToken, riseupErrorMessage, validateNewPassword } from '../lib/errors';
 import { formatDistanceToNow } from 'date-fns';
 import { he } from 'date-fns/locale';
 
 export function Settings() {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const [token, setToken] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<string | null>(null);
@@ -20,7 +24,7 @@ export function Settings() {
       setError(null);
       qc.invalidateQueries({ queryKey: ['riseup-status'] });
     },
-    onError: (e: any) => setError(e.response?.data?.error || 'החיבור נכשל'),
+    onError: (e: unknown) => setError(riseupErrorMessage(e, 'החיבור נכשל')),
   });
 
   const disconnect = useMutation({
@@ -38,7 +42,7 @@ export function Settings() {
       qc.invalidateQueries({ queryKey: ['transactions'] });
       qc.invalidateQueries({ queryKey: ['riseup-status'] });
     },
-    onError: (e: any) => { setError(e.response?.data?.error || 'הסנכרון נכשל'); setSyncResult(null); },
+    onError: (e: unknown) => { setError(riseupErrorMessage(e, 'הסנכרון נכשל')); setSyncResult(null); },
   });
 
   return (
@@ -61,6 +65,11 @@ export function Settings() {
             Developer Tokens <ExternalLink size={11} />
           </a>{' '}
           ב-RiseUp. הטוקן ניתן לקריאה בלבד ופג תוקף אחרי 30 יום.
+        </p>
+        <p className="text-sm text-indigo-300 bg-indigo-900/20 border border-indigo-800 rounded-xl px-3 py-2">
+          הטוקן שייך <strong>למשתמש המחובר בלבד</strong>
+          {user ? <> (<span dir="ltr">{user.email}</span>)</> : null}
+          {' '}— משתמשים אחרים באפליקציה לא רואים אותו ולא את הנתונים שלך.
         </p>
 
         {isLoading ? (
@@ -124,6 +133,11 @@ export function Settings() {
             {error}
           </div>
         )}
+        {error && looksLikeExpiredToken(error) && (
+          <div className="rounded-xl px-4 py-3 text-sm bg-amber-900/30 text-amber-300 border border-amber-700">
+            ייתכן שהטוקן פג תוקף (טוקן RiseUp תקף ל-30 יום בלבד). צרו טוקן חדש ב-Developer Tokens, התנתקו מ-RiseUp והתחברו מחדש עם הטוקן החדש.
+          </div>
+        )}
         {syncResult && (
           <div className="rounded-xl px-4 py-3 text-sm bg-green-900/30 text-green-300 border border-green-700">
             {syncResult}
@@ -131,10 +145,57 @@ export function Settings() {
         )}
       </div>
 
+      <PasswordSection />
+
       <div className="bg-slate-800/50 rounded-2xl p-5 border border-slate-700 text-sm text-slate-400 space-y-1">
-        <p>הטוקן נשמר מקומית בלבד ב-SQLite ואינו עוזב את המחשב שלך.</p>
+        <p>הטוקן נשמר בשרת בלבד (מוצפן, ומשויך לחשבון שלך) ואינו נשלח לשום גורם מלבד RiseUp.</p>
         <p>סנכרון שולף את שלושת החודשים האחרונים ומזהה אוטומטית את כרטיסי האשראי המחוברים לחשבון ה-RiseUp שלך.</p>
       </div>
+    </div>
+  );
+}
+
+function PasswordSection() {
+  const { changePassword } = useAuth();
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [errors, setErrors] = useState<{ next?: string; confirm?: string; current?: string }>({});
+  const [done, setDone] = useState(false);
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (changePassword.isPending) return;
+    setDone(false);
+    const v = {
+      current: current ? undefined : 'יש להזין את הסיסמה הנוכחית',
+      next: validateNewPassword(next) ?? undefined,
+      confirm: confirm !== next ? 'הסיסמאות אינן תואמות' : undefined,
+    };
+    setErrors(v);
+    if (v.current || v.next || v.confirm) return;
+    changePassword.mutate({ currentPassword: current, newPassword: next }, {
+      onSuccess: () => { setDone(true); setCurrent(''); setNext(''); setConfirm(''); },
+    });
+  };
+
+  return (
+    <div id="password" className="bg-slate-800 rounded-2xl p-5 border border-slate-700 space-y-4">
+      <div className="flex items-center gap-2">
+        <KeyRound size={18} className="text-indigo-400" aria-hidden="true" />
+        <h2 className="text-lg font-semibold text-white">החלפת סיסמה</h2>
+      </div>
+      <form onSubmit={onSubmit} noValidate className="space-y-3">
+        <PasswordField id="cp-current" label="סיסמה נוכחית" autoComplete="current-password"
+          value={current} onChange={setCurrent} error={errors.current} />
+        <PasswordField id="cp-new" label="סיסמה חדשה (10–128 תווים)" autoComplete="new-password"
+          value={next} onChange={setNext} error={errors.next} />
+        <PasswordField id="cp-confirm" label="אימות סיסמה חדשה" autoComplete="new-password"
+          value={confirm} onChange={setConfirm} error={errors.confirm} />
+        <FormAlert message={changePassword.isError ? authErrorMessage(changePassword.error) : null} />
+        <FormAlert tone="success" message={done ? 'הסיסמה הוחלפה. כל החיבורים האחרים שלך (מכשירים ודפדפנים אחרים) נותקו; החיבור הנוכחי נשאר פעיל.' : null} />
+        <SubmitButton pending={changePassword.isPending} pendingLabel="מחליף...">החלף סיסמה</SubmitButton>
+      </form>
     </div>
   );
 }

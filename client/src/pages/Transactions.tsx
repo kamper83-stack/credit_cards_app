@@ -5,6 +5,7 @@ import { Plus, Trash2, X, CalendarDays } from 'lucide-react';
 import { cardsApi, transactionsApi } from '../api';
 import { AddTransactionModal } from '../components/AddTransactionModal';
 import type { Transaction } from '../types';
+import { statusOf } from '../lib/errors';
 import { format } from 'date-fns';
 import { he } from 'date-fns/locale';
 
@@ -92,12 +93,19 @@ export function Transactions() {
   });
 
   const deleteTx = useMutation({
-    mutationFn: transactionsApi.delete,
+    mutationFn: ({ id, card_id }: { id: string; card_id: string }) => transactionsApi.delete(id, card_id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['transactions'] });
       qc.invalidateQueries({ queryKey: ['goals'] });
     },
-    onError: () => setError('מחיקת העסקה נכשלה'),
+    onError: (e: unknown) => {
+      const status = statusOf(e);
+      if (status === 404 || status === 400) { // gone or ambiguous: refetch so the list is truthful
+        qc.invalidateQueries({ queryKey: ['transactions'] });
+        qc.invalidateQueries({ queryKey: ['goals'] });
+        setError(status === 404 ? 'העסקה כבר נמחקה. הרשימה רועננה.' : 'לא ניתן לזהות את העסקה למחיקה. הרשימה רועננה.');
+      } else setError('מחיקת העסקה נכשלה');
+    },
   });
 
   return (
@@ -197,7 +205,7 @@ export function Transactions() {
                     </td>
                     <td className="px-4 py-3">
                       <button
-                        onClick={() => deleteTx.mutate(t.id)}
+                        onClick={() => deleteTx.mutate({ id: t.id, card_id: t.card_id })}
                         className="text-slate-600 hover:text-red-400 transition-colors"
                       >
                         <Trash2 size={14} />

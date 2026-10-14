@@ -5,6 +5,10 @@ import { Cards } from './pages/Cards';
 import { Transactions } from './pages/Transactions';
 import { Settings } from './pages/Settings';
 import { AutoSync } from './components/AutoSync';
+import { UserMenu } from './components/UserMenu';
+import { Login } from './pages/Login';
+import { Register } from './pages/Register';
+import { GuestRoute, ProtectedRoute } from './auth/routes';
 
 const nav = [
   { to: '/', label: 'סקירה כללית', icon: LayoutDashboard, exact: true },
@@ -15,6 +19,18 @@ const nav = [
 
 export default function App() {
   return (
+    <Routes>
+      <Route path="/login" element={<GuestRoute><Login /></GuestRoute>} />
+      <Route path="/register" element={<GuestRoute><Register /></GuestRoute>} />
+      <Route path="/*" element={<ProtectedRoute><AppLayout /></ProtectedRoute>} />
+    </Routes>
+  );
+}
+
+// Everything below is only mounted for an authenticated user, so AutoSync and every data query
+// start after /auth/me has resolved and never run on the login screens.
+function AppLayout() {
+  return (
     <div className="min-h-screen flex flex-col">
       <AutoSync />
       {/* Header */}
@@ -24,6 +40,7 @@ export default function App() {
             <Trophy size={20} className="text-amber-400" />
             <span className="font-bold text-white">מעקב הטבות כרטיסי אשראי</span>
           </div>
+          <div className="flex items-center gap-1">
           <nav className="flex items-center gap-1">
             {nav.map(({ to, label, icon: Icon, exact }) => (
               <NavLink
@@ -41,6 +58,8 @@ export default function App() {
               </NavLink>
             ))}
           </nav>
+          <UserMenu />
+          </div>
         </div>
       </header>
 
