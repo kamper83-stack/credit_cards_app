@@ -7,8 +7,10 @@ export interface AuthOptions {
   now?: () => number;
   /** Per-IP login limit (default env LOGIN_RATE_LIMIT_IP_MAX or 20). */
   loginIpMax?: number;
-  /** Per-email login limit (default env LOGIN_RATE_LIMIT_EMAIL_MAX or 10). */
+  /** Per (email + IP) login limit (default env LOGIN_RATE_LIMIT_EMAIL_MAX or 10). */
   loginEmailMax?: number;
+  /** Per-email ceiling across all IPs, a high backstop only (default env LOGIN_RATE_LIMIT_EMAIL_GLOBAL_MAX or 100). */
+  loginEmailGlobalMax?: number;
   loginWindowMs?: number;
   /** Per-IP registration limit (default env REGISTER_RATE_LIMIT_MAX or 10). */
   registerIpMax?: number;
@@ -28,6 +30,7 @@ export interface AuthConfig {
   now: () => number;
   loginIpMax: number;
   loginEmailMax: number;
+  loginEmailGlobalMax: number;
   loginWindowMs: number;
   registerIpMax: number;
   registerWindowMs: number;
@@ -75,6 +78,7 @@ export function resolveAuthConfig(o: AuthOptions = {}, env: NodeJS.ProcessEnv = 
     now: o.now ?? Date.now,
     loginIpMax: o.loginIpMax ?? envNum(env.LOGIN_RATE_LIMIT_IP_MAX) ?? 20,
     loginEmailMax: o.loginEmailMax ?? envNum(env.LOGIN_RATE_LIMIT_EMAIL_MAX) ?? 10,
+    loginEmailGlobalMax: o.loginEmailGlobalMax ?? envNum(env.LOGIN_RATE_LIMIT_EMAIL_GLOBAL_MAX) ?? 100,
     loginWindowMs: o.loginWindowMs ?? envNum(env.LOGIN_RATE_LIMIT_WINDOW_MS) ?? 15 * 60 * 1000,
     registerIpMax: o.registerIpMax ?? envNum(env.REGISTER_RATE_LIMIT_MAX) ?? 10,
     registerWindowMs: o.registerWindowMs ?? envNum(env.REGISTER_RATE_LIMIT_WINDOW_MS) ?? 60 * 60 * 1000,

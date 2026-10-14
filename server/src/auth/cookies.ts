@@ -1,4 +1,4 @@
-import type { Request, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import type { AuthConfig } from './config.js';
 
 /** Minimal Cookie header parser (no dependency). Returns the first value for `name`. */
@@ -24,4 +24,22 @@ export function setSessionCookie(res: Response, cfg: AuthConfig, token: string):
 
 export function clearSessionCookie(res: Response, cfg: AuthConfig): void {
   res.append('Set-Cookie', `${cfg.cookieName}=; ${attrs(cfg)}; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
+}
+
+/**
+ * Logs once if secure-cookie mode is on but a request arrives over plain http (after trust-proxy
+ * handling, i.e. honouring X-Forwarded-Proto from a trusted proxy). Browsers silently drop Secure
+ * cookies received over http, so login would look successful but never stick.
+ */
+export function warnInsecureCookieMode(cfg: AuthConfig) {
+  let warned = false;
+  return (req: Request, _res: Response, next: NextFunction) => {
+    if (cfg.secure && !warned && req.protocol === 'http') {
+      warned = true;
+      console.warn('WARNING: COOKIE_SECURE is on but a request arrived over plain http. Browsers drop Secure cookies ' +
+        'received over http, so logins will not stick. Serve over HTTPS (with X-Forwarded-Proto and a matching TRUST_PROXY) ' +
+        'or set COOKIE_SECURE=false for a plain-HTTP deployment.');
+    }
+    next();
+  };
 }

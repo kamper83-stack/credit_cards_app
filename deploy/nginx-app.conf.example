@@ -20,6 +20,9 @@ server {
         # of this nginx, use $proxy_add_x_forwarded_for and trust that hop in the app.
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Overwrite (never pass through) X-Forwarded-Host with the Host the client sent, port included;
+        # the app's CSRF check treats it as an additional own host when the peer is a trusted proxy.
+        proxy_set_header X-Forwarded-Host $http_host;
     }
 
     # The statically served HTML bypasses Express, so send the security headers here.

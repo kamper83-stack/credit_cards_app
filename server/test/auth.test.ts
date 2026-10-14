@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 import { createHash } from 'crypto';
@@ -8,6 +8,7 @@ import { resolveAuthConfig } from '../src/auth/config.js';
 import { sessionLoader, requireAuth, requireAdmin } from '../src/auth/middleware.js';
 import { cleanupExpiredSessions } from '../src/auth/sessions.js';
 import { hashPassword } from '../src/password.js';
+import { checkPassword } from '../src/auth/passwordPolicy.js';
 
 const ORIGIN = 'http://app.test';
 const PW = 'correct horse battery';
@@ -20,7 +21,7 @@ function make(opts: AppOptions = {}) {
   const app = createApp({
     allowedOrigins: [ORIGIN],
     cookieSecure: false,
-    loginIpMax: 1000, loginEmailMax: 1000, registerIpMax: 1000,
+    loginIpMax: 1000, loginEmailMax: 1000, loginEmailGlobalMax: 1000, registerIpMax: 1000,
     now: () => clock.t,
     ...opts,
   });
@@ -164,7 +165,7 @@ describe('login', () => {
     expect((await get(app, '/api/auth/me', second)).status).toBe(200);
   });
 
-  it('locks after 5 failures with exponential backoff and resets on success', async () => {
+  it('locks for 60s after 5 failures, refuses the right password while locked, then starts a clean window', async () => {
     const { app, clock } = make();
     const { email } = await register(app);
     const row = () => db.prepare(`SELECT failed_attempts f, locked_until l FROM users WHERE email = ?`).get(email) as any;
@@ -183,29 +184,44 @@ describe('login', () => {
     expect(row().f).toBe(5); // not counted while locked
 
     clock.t += 61_000;
-    await bad(); // 6th -> 2 minutes
-    expect(row().f).toBe(6);
-    expect(row().l - now()).toBe(120);
-    clock.t += 61_000;
-    expect((await good()).status).toBe(401); // still locked
-    clock.t += 61_000;
-    for (let i = 0; i < 3; i++) { await bad(); clock.t += 16 * 60_000; } // 7,8,9 -> 4m, 8m, 15m (cap)
-    expect(row().f).toBe(9);
-    await bad(); expect(row().l - now()).toBe(15 * 60); // 10th: 32m capped to 15m
-    clock.t += 15 * 60_000 + 1000;
+    await bad(); // lock expired: new window, ONE failure must not re-lock
+    expect(row()).toEqual({ f: 1, l: null });
     expect((await good()).status).toBe(200);
     expect(row()).toEqual({ f: 0, l: null });
   });
 
-  it('per-email limiter returns 429 across IPs, and other emails are unaffected', async () => {
+  it('an attacker making one failure per lock window cannot keep the victim locked', async () => {
+    const { app, clock } = make();
+    const { email } = await register(app);
+    const row = () => db.prepare(`SELECT failed_attempts f, locked_until l FROM users WHERE email = ?`).get(email) as any;
+    for (let i = 0; i < 5; i++) await post(app, '/api/auth/login', { email, password: 'wrong-password-1' });
+    expect(row().l).not.toBeNull();
+    for (let round = 0; round < 3; round++) {
+      clock.t += 15 * 60_000; // attacker's one attempt per 15 min
+      await post(app, '/api/auth/login', { email, password: 'wrong-password-1' });
+      expect(row().l).toBeNull();
+      expect((await post(app, '/api/auth/login', { email, password: PW })).status).toBe(200);
+      for (let i = 0; i < 5; i++) await post(app, '/api/auth/login', { email, password: 'wrong-password-1' });
+    }
+  });
+
+  it('per-(email+IP) limiter: attacker quota does not block the victim from another IP; global backstop applies', async () => {
     const { app } = make({ loginEmailMax: 3 });
-    const email = newEmail();
-    const attempt = (e: string, ip: string) =>
-      post(app, '/api/auth/login', { email: e, password: 'nope-nope-nope' }).set('X-Forwarded-For', ip);
+    const { email } = await register(app);
+    const attempt = (ip: string, password = 'nope-nope-nope') =>
+      post(app, '/api/auth/login', { email: email.toUpperCase(), password }).set('X-Forwarded-For', ip);
     const statuses = [];
-    for (let i = 0; i < 5; i++) statuses.push((await attempt(email.toUpperCase(), `10.0.0.${i}`)).status);
-    expect(statuses).toEqual([401, 401, 401, 429, 429]);
-    expect((await attempt(newEmail(), '10.0.0.1')).status).toBe(401);
+    for (let i = 0; i < 4; i++) statuses.push((await attempt('10.0.0.1')).status);
+    expect(statuses).toEqual([401, 401, 401, 429]);
+    expect((await attempt('10.0.0.1', PW)).status).toBe(429); // the attacker's own IP stays limited
+    expect((await attempt('10.0.0.2', PW)).status).toBe(200); // victim elsewhere is fine
+    expect((await post(app, '/api/auth/login', { email: newEmail(), password: 'nope-nope-nope' }).set('X-Forwarded-For', '10.0.0.1')).status).toBe(401);
+
+    const { app: a2 } = make({ loginEmailMax: 1000, loginEmailGlobalMax: 3 });
+    const e2 = newEmail();
+    const s2 = [];
+    for (let i = 0; i < 5; i++) s2.push((await post(a2, '/api/auth/login', { email: e2, password: 'nope-nope-nope' }).set('X-Forwarded-For', `10.1.0.${i}`)).status);
+    expect(s2).toEqual([401, 401, 401, 429, 429]);
   });
 
   it('per-IP login and register limiters return 429', async () => {
@@ -334,6 +350,12 @@ describe('CSRF', () => {
     expect(login.status).toBe(403);
   });
 
+  it('dev proxy: Origin localhost:5173 passes when Host is preserved, fails when the proxy rewrites Host', async () => {
+    const dev = (host: string) => request(app).post('/api/auth/logout').set('Host', host).set('Origin', 'http://localhost:5173');
+    expect((await dev('localhost:5173')).status).toBe(200); // Vite proxy with changeOrigin: false
+    expect((await dev('localhost:3001')).status).toBe(403); // changeOrigin: true rewrites Host
+  });
+
   it('accepts configured ALLOWED_ORIGINS', async () => {
     const { app: a2 } = make({ allowedOrigins: ['https://front.example'] });
     expect((await request(a2).post('/api/auth/logout').set('Origin', 'https://front.example')).status).toBe(200);
@@ -357,5 +379,45 @@ describe('password hashing sanity', () => {
     const row = db.prepare(`SELECT password_hash h FROM users WHERE id = ?`).get(res.body.id) as any;
     expect(row.h).toMatch(/^\$argon2id\$/);
     expect(await hashPassword('x'.repeat(12))).toMatch(/^\$argon2id\$/);
+  });
+});
+
+describe('password normalisation and shape', () => {
+  it('NFC: a password registered composed logs in when typed decomposed, and vice versa', async () => {
+    const { app } = make();
+    const composed = 'caf\u00e9 au lait 123';
+    const decomposed = composed.normalize('NFD');
+    expect(decomposed).not.toBe(composed);
+    const { email } = await register(app, newEmail(), composed);
+    expect((await post(app, '/api/auth/login', { email, password: decomposed })).status).toBe(200);
+    const { email: e2 } = await register(app, newEmail(), decomposed);
+    expect((await post(app, '/api/auth/login', { email: e2, password: composed })).status).toBe(200);
+  });
+
+  it('rejects whitespace-only and NUL-containing passwords', async () => {
+    const { app } = make();
+    for (const password of [' '.repeat(12), '\t\u00a0 \n'.repeat(4), 'valid pass\u0000word']) {
+      expect((await post(app, '/api/auth/register', { email: newEmail(), password })).status).toBe(400);
+    }
+    expect(checkPassword(' '.repeat(20))).not.toBeNull();
+    expect(checkPassword('abc\u0000defghijk')).not.toBeNull();
+  });
+});
+
+describe('insecure cookie warning', () => {
+  it('warns once when secure mode sees plain http, not behind a trusted https proxy', async () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { app } = make({ cookieSecure: true });
+      await get(app, '/api/auth/me'); await get(app, '/api/auth/me');
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockClear();
+      const { app: behind } = make({ cookieSecure: true });
+      await get(behind, '/api/auth/me').set('X-Forwarded-Proto', 'https');
+      expect(spy).not.toHaveBeenCalled();
+      const { app: plain } = make({ cookieSecure: false });
+      await get(plain, '/api/auth/me');
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
   });
 });

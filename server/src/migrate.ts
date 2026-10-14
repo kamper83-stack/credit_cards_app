@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { hashPassword } from './password.js';
+import { passwordShapeError } from './auth/passwordPolicy.js';
 import { encryptPat, decryptPat, parseKey, currentKeyVersion, upgradeAllRows, type PatRow } from './crypto.js';
 
 type Env = Record<string, string | undefined>;
@@ -139,7 +140,8 @@ function requireAdminEnv(env: Env, legacyData: boolean): { email: string; passwo
         : 'ADMIN_EMAIL and ADMIN_PASSWORD (or ADMIN_PASSWORD_FILE) must both be set to create the admin account.');
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new MigrationError('ADMIN_EMAIL is not a valid email address.');
-  if (password.length < 12) throw new MigrationError('ADMIN_PASSWORD must be at least 12 characters.');
+  if ([...password.normalize('NFC')].length < 12) throw new MigrationError('ADMIN_PASSWORD must be at least 12 characters.');
+  if (passwordShapeError(password)) throw new MigrationError('ADMIN_PASSWORD must not contain NUL characters or consist only of whitespace.');
   return { email, password };
 }
 

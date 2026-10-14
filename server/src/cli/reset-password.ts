@@ -11,6 +11,8 @@ import { revokeAllSessions } from '../auth/sessions.js';
  * accepted via argv or the environment, so it cannot leak into shell history or `ps`.
  */
 
+class Cancelled extends Error {}
+
 function readHidden(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const stdin = process.stdin;
@@ -23,26 +25,31 @@ function readHidden(prompt: string): Promise<string> {
     }
     process.stderr.write(prompt);
     let value = '';
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding('utf8');
+    const finish = () => {
+      stdin.setRawMode(false);
+      stdin.pause();
+      stdin.off('data', onData);
+      process.stderr.write('\n');
+    };
     const onData = (chunk: string) => {
       for (const ch of chunk) {
-        if (ch === '\r' || ch === '\n' || ch === '\u0004') {
-          stdin.setRawMode(false);
-          stdin.pause();
-          stdin.off('data', onData);
-          process.stderr.write('\n');
-          return resolve(value);
-        }
-        if (ch === '\u0003') { stdin.setRawMode(false); process.stderr.write('\n'); return reject(new Error('בוטל')); }
+        if (ch === '\r' || ch === '\n' || ch === '\u0004') { finish(); return resolve(value); }
+        // Raw mode swallows SIGINT, so Ctrl-C arrives as a character: restore the terminal and cancel.
+        if (ch === '\u0003') { finish(); return reject(new Cancelled('Cancelled.')); }
         if (ch === '\u007f' || ch === '\b') value = [...value].slice(0, -1).join('');
         else value += ch;
       }
     };
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
     stdin.on('data', onData);
   });
 }
+
+// Never leave the terminal in raw mode (no echo) however the process ends.
+process.on('exit', () => { try { if (process.stdin.isTTY) process.stdin.setRawMode(false); } catch { /* ignore */ } });
+process.on('SIGINT', () => { process.stderr.write('\nCancelled.\n'); process.exit(130); });
 
 async function main() {
   const email = process.argv[2]?.trim().toLowerCase();
@@ -58,7 +65,7 @@ async function main() {
   const password = await readHidden('New password: ');
   if (process.stdin.isTTY) {
     const again = await readHidden('Repeat password: ');
-    if (again !== password) { console.error('Passwords do not match.'); process.exit(1); }
+    if (again.normalize('NFC') !== password.normalize('NFC')) { console.error('Passwords do not match.'); process.exit(1); }
   }
   const problem = checkPassword(password, email);
   if (problem) { console.error(problem); process.exit(1); }
@@ -71,4 +78,8 @@ async function main() {
   console.log(`Password reset for ${email}. All sessions revoked, lockout cleared.`);
 }
 
-main().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1); });
+main().then(() => process.exit(0)).catch((e) => {
+  if (e instanceof Cancelled) { console.error('Cancelled. Nothing was changed.'); process.exit(130); }
+  console.error(e.message);
+  process.exit(1);
+});

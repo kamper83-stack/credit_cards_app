@@ -17,10 +17,21 @@ export function createAuthLimiters(cfg: AuthConfig) {
       ...common, windowMs: cfg.loginWindowMs, limit: cfg.loginIpMax,
       keyGenerator: (req) => ipKeyGenerator(req.ip ?? ''),
     }),
-    // Per target account, regardless of source IP (slows distributed guessing). Successful logins
-    // are not counted. Unknown and known emails are limited identically (no enumeration signal).
+    // Keyed on (email + IP): an attacker burning their own quota against a victim's address cannot
+    // lock the victim out from a different IP. Successful logins are not counted. Unknown and known
+    // emails are limited identically (no enumeration signal).
     loginEmail: rateLimit({
       ...common, windowMs: cfg.loginWindowMs, limit: cfg.loginEmailMax, skipSuccessfulRequests: true,
+      keyGenerator: (req) => {
+        const ip = ipKeyGenerator(req.ip ?? '');
+        const email = normalizeEmail(req.body?.email);
+        return email ? `email+ip:${email.slice(0, 254)}|${ip}` : ip;
+      },
+    }),
+    // Per email across all IPs: a deliberately high backstop against distributed guessing. Reaching it
+    // needs many source IPs, and it is the one place a botnet could still deny a victim service.
+    loginEmailGlobal: rateLimit({
+      ...common, windowMs: cfg.loginWindowMs, limit: cfg.loginEmailGlobalMax, skipSuccessfulRequests: true,
       keyGenerator: (req) => {
         const email = normalizeEmail(req.body?.email);
         return email ? `email:${email.slice(0, 254)}` : ipKeyGenerator(req.ip ?? '');

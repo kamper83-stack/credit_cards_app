@@ -6,7 +6,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      "/api": "http://localhost:3001",
+      // changeOrigin must stay false: the server's CSRF check compares the browser's Origin
+      // (http://localhost:5173) with the Host header, so the proxy must not rewrite Host to :3001.
+      "/api": { target: "http://localhost:3001", changeOrigin: false },
     },
   },
 });

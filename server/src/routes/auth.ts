@@ -11,8 +11,7 @@ import { checkPassword } from '../auth/passwordPolicy.js';
 import { createSession, revokeAllSessions, revokeSession, rotateSession } from '../auth/sessions.js';
 
 export const LOCKOUT_THRESHOLD = 5;
-const LOCKOUT_BASE_SECONDS = 60;
-const LOCKOUT_MAX_SECONDS = 15 * 60;
+const LOCKOUT_SECONDS = 60;
 
 const GENERIC_LOGIN_ERROR = 'אימייל או סיסמה שגויים';
 const INVALID_INPUT = 'פרטים לא תקינים';
@@ -39,24 +38,33 @@ export function createAuthRouter(db: Database.Database, cfg: AuthConfig): Router
   const nowSec = () => Math.floor(cfg.now() / 1000);
 
   // A real argon2 hash verified when the account is missing/locked, so those paths cost the same
-  // CPU time as a genuine wrong-password attempt. Created lazily, once.
-  let dummy: Promise<string> | undefined;
-  const dummyHash = () => (dummy ??= hashPassword(randomUUID()));
+  // CPU time as a genuine wrong-password attempt. Created eagerly at startup (the promise is shared).
+  const dummy = hashPassword(randomUUID());
+  dummy.catch(() => {}); // surfaced where awaited; never an unhandled rejection
+  const dummyHash = () => dummy;
 
   router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
   const userPayload = (u: { id: string; email: string; is_admin: number }) => ({ id: u.id, email: u.email, isAdmin: !!u.is_admin });
   const isLocked = (u: UserRow) => !!u.locked_until && u.locked_until > nowSec();
 
-  /** Counts a failed password check. From the 5th consecutive failure: lock 1m, 2m, 4m ... max 15m. */
+  /**
+   * Counts a failed password check. The 5th failure in a window locks the account for 60s. Once a
+   * lock has expired the counter restarts from zero, so a single later failure (e.g. an attacker
+   * probing once per window) never re-locks the account. Failures while locked are not counted.
+   * Residual risk: an attacker who can send 5 failures per minute from allowed IPs can keep the
+   * account mostly locked; the per-(email+IP) and per-IP limiters make that costly, and an admin can
+   * clear the lock with `npm run reset-password`.
+   */
   function recordFailure(userId: string): void {
     db.transaction(() => {
-      db.prepare(`UPDATE users SET failed_attempts = COALESCE(failed_attempts, 0) + 1 WHERE id = ?`).run(userId);
-      const n = (db.prepare(`SELECT failed_attempts AS n FROM users WHERE id = ?`).get(userId) as { n: number }).n;
-      if (n >= LOCKOUT_THRESHOLD) {
-        const delay = Math.min(LOCKOUT_MAX_SECONDS, LOCKOUT_BASE_SECONDS * 2 ** Math.min(n - LOCKOUT_THRESHOLD, 10));
-        db.prepare(`UPDATE users SET locked_until = ? WHERE id = ?`).run(nowSec() + delay, userId);
-      }
+      const row = db.prepare(`SELECT failed_attempts AS n, locked_until AS l FROM users WHERE id = ?`).get(userId) as
+        { n: number | null; l: number | null } | undefined;
+      if (!row) return;
+      const base = row.l && row.l <= nowSec() ? 0 : (row.n ?? 0);
+      const n = base + 1;
+      db.prepare(`UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?`)
+        .run(n, n >= LOCKOUT_THRESHOLD ? nowSec() + LOCKOUT_SECONDS : null, userId);
     })();
   }
 
@@ -102,7 +110,7 @@ export function createAuthRouter(db: Database.Database, cfg: AuthConfig): Router
   // Retry-After and equal argon2 work, so neither messages nor timing reveal whether an account
   // exists. Tradeoff: a locked user is not told to wait (the UI should hint at it generically);
   // the per-email limiter's 429 is uniform for existing and unknown addresses.
-  router.post('/login', limits.loginIp, limits.loginEmail, async (req, res, next) => {
+  router.post('/login', limits.loginIp, limits.loginEmail, limits.loginEmailGlobal, async (req, res, next) => {
     try {
       const parsed = LoginSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: INVALID_INPUT });
@@ -151,7 +159,7 @@ export function createAuthRouter(db: Database.Database, cfg: AuthConfig): Router
       }
       const policy = checkPassword(newPassword, user.email);
       if (policy) return res.status(400).json({ error: policy });
-      if (newPassword === currentPassword) return res.status(400).json({ error: 'הסיסמה החדשה זהה לנוכחית' });
+      if (newPassword.normalize('NFC') === currentPassword.normalize('NFC')) return res.status(400).json({ error: 'הסיסמה החדשה זהה לנוכחית' });
 
       const newHash = await hashPassword(newPassword);
       db.transaction(() => {

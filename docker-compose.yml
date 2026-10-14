@@ -22,6 +22,19 @@ services:
       - ADMIN_EMAIL
       - ADMIN_PASSWORD
       - ADMIN_PASSWORD_FILE
+      # Auth / rate-limit tuning, passed through from the host environment / .env when set (names
+      # only). COOKIE_SECURE=true only when served over HTTPS; leave unset for plain-HTTP access
+      # (then it defaults to true in production and logins will not stick over http).
+      - COOKIE_SECURE
+      - ALLOWED_ORIGINS
+      - LOGIN_RATE_LIMIT_IP_MAX
+      - LOGIN_RATE_LIMIT_EMAIL_MAX
+      - LOGIN_RATE_LIMIT_EMAIL_GLOBAL_MAX
+      - LOGIN_RATE_LIMIT_WINDOW_MS
+      - REGISTER_RATE_LIMIT_MAX
+      - REGISTER_RATE_LIMIT_WINDOW_MS
+      - RATE_LIMIT_MAX
+      - RATE_LIMIT_WINDOW_MS
     volumes:
       - ./data:/app/data
     healthcheck:

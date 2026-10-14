@@ -15,6 +15,7 @@ import { createAuthRouter } from './routes/auth.js';
 import { resolveAuthConfig, type AuthOptions } from './auth/config.js';
 import { csrfProtection } from './auth/csrf.js';
 import { sessionLoader } from './auth/middleware.js';
+import { warnInsecureCookieMode } from './auth/cookies.js';
 
 // TRUST_PROXY: which peers may set X-Forwarded-* (affects req.ip and thus rate limiting).
 // Default 'loopback': only a proxy on the same host (nginx -> 127.0.0.1) is trusted, so a
@@ -81,6 +82,7 @@ export function createApp(options: AppOptions = {}) {
 
   // Attaches req.user when a valid session cookie is present. Existing routes are not yet
   // protected with requireAuth (phase 4 scopes them per user).
+  app.use('/api', warnInsecureCookieMode(authConfig));
   app.use('/api', sessionLoader(db, authConfig));
   app.use('/api/auth', createAuthRouter(db, authConfig));
 

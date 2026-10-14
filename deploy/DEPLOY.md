@@ -60,7 +60,7 @@ openssl rand -base64 32     # הערך ל-TOKEN_ENC_KEY
 
 - שמרו עותק של המפתח **במקום נפרד מהמסד ומהגיבויים שלו** (מנהל סיסמאות וכד'). בלי המפתח אי אפשר לפענח את הטוקן; מי שמחזיק גם את המפתח וגם את קובץ המסד יכול לקרוא אותו.
 - הגדירו ב-`.env`: `TOKEN_ENC_KEY`, ו-`ADMIN_EMAIL` + `ADMIN_PASSWORD` (לפחות 12 תווים). חלופה ל-`ADMIN_PASSWORD`: `ADMIN_PASSWORD_FILE=/path/to/file` (קובץ עם הסיסמה, שורה חדשה בסוף נחתכת; אין להגדיר את שניהם יחד). ב-Docker יש לעגן את הקובץ כ-volume.
-- **מיקום ה-`.env`:** ב-pm2 ה-`cwd` הוא `server/`, ולכן הקובץ הוא `server/.env` (dotenv טוען מתיקיית העבודה). ב-Docker אין `.env` בתוך האימג'; `docker-compose.yml` מעביר את `TOKEN_ENC_KEY`, `TOKEN_ENC_KEY_VERSION`, `TOKEN_ENC_KEY_PREV`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_PASSWORD_FILE` ממשתני הסביבה של המארח או מקובץ `.env` שלצד `docker-compose.yml`.
+- **מיקום ה-`.env`:** ב-pm2 ה-`cwd` הוא `server/`, ולכן הקובץ הוא `server/.env` (dotenv טוען מתיקיית העבודה). ב-Docker אין `.env` בתוך האימג'; `docker-compose.yml` מעביר את `TOKEN_ENC_KEY`, `TOKEN_ENC_KEY_VERSION`, `TOKEN_ENC_KEY_PREV`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_PASSWORD_FILE`, וכן `COOKIE_SECURE`, `ALLOWED_ORIGINS`, `LOGIN_RATE_LIMIT_*`, `REGISTER_RATE_LIMIT_*`, `RATE_LIMIT_*` ממשתני הסביבה של המארח או מקובץ `.env` שלצד `docker-compose.yml`.
 
 **מה קורה בהפעלה הראשונה על מסד ישן:** לפני כל שינוי השרת בודק (קריאה בלבד) שהמפתח ופרטי המנהל תקינים; אם לא - הוא יוצא עם הודעת שגיאה והמסד **לא משתנה** (לא נוצר גיבוי ולא משתנה סכמה, כך שגם לולאת restart לא מזיקה). רק אחרי שהבדיקה עברה נוצר גיבוי חד-פעמי `rewards.db.bak-<זמן>` (הרשאות 600), הסכמה מתעדכנת, הכרטיסים והסנכרונים משויכים למנהל והטוקן עובר להצפנה.
 
@@ -84,8 +84,10 @@ openssl rand -base64 32     # הערך ל-TOKEN_ENC_KEY
 ## 3ב. אימות משתמשים (cookies, CSRF, איפוס סיסמה)
 
 - ה-session נשמר ב-cookie בשם `__Host-sid` (דגל `Secure`) כש-`COOKIE_SECURE=true` (ברירת המחדל כש-`NODE_ENV=production`), אחרת `sid` בלי `Secure`. **פריסה ב-HTTP פשוט (כתובת Tailscale בלי TLS) חייבת `COOKIE_SECURE=false`** - אחרת הדפדפן יזרוק את ה-cookie וההתחברות לא תחזיק. עם HTTPS השאירו `true`.
-- ה-nginx חייב להעביר `Host` מקורי (`proxy_set_header Host $host;`, כבר קיים בדוגמה) - בדיקת ה-CSRF משווה את `Origin` ל-`Host`. מקורות נוספים: `ALLOWED_ORIGINS` (רשימה מופרדת בפסיקים). בקשות לא-דפדפן (curl) חייבות לשלוח `Origin`.
+- ה-nginx חייב להעביר `Host` מקורי (`proxy_set_header Host $host;`, כבר קיים בדוגמה) - בדיקת ה-CSRF משווה את `Origin` ל-`Host`. ה-nginx גם דורס את `X-Forwarded-Host` ב-`$http_host` (כולל פורט). בדיקת ה-CSRF משווה host בלבד ולא סכמה (http/https); זה מכוון, כי הסכמה מגיעה מכותרת שניתנת לזיוף אם `TRUST_PROXY` רחב מדי. מקורות נוספים: `ALLOWED_ORIGINS` (רשימה מופרדת בפסיקים). בקשות לא-דפדפן (curl) חייבות לשלוח `Origin`.
 - `TRUST_PROXY` חייב להיות נכון כדי שה-rate limit לפי IP יעבוד (ראו סעיף nginx). מגבלות הכניסה/הרשמה: משתני `LOGIN_RATE_LIMIT_*` / `REGISTER_RATE_LIMIT_*` ב-`.env.example`.
+- נעילת חשבון: 5 כשלונות רצופים נועלים ל-60 שניות; אחרי שהנעילה פגה המונה מתחיל מאפס (כשלון בודד לא נועל שוב). מגבלת ניסיונות לפי (אימייל + IP) ומגבלה גבוהה (`LOGIN_RATE_LIMIT_EMAIL_GLOBAL_MAX`, ברירת מחדל 100) לפי אימייל בלבד. סיכון שיורי: תוקף עם הרבה כתובות IP יכול עדיין להקשות על משתמש מסוים להתחבר. במקרה כזה נקו את הנעילה עם `reset-password` (למטה). סיסמאות מנורמלות ל-NFC לפני ה-hash.
+- `COOKIE_SECURE` ב-`ecosystem.config.cjs` מוגדר `false` (HTTP פשוט); הגדירו `true` רק מאחורי TLS. אם הוא `true` והשרת רואה בקשת http, נרשמת אזהרה בלוג (פעם אחת).
 - איפוס סיסמה למשתמש (למנהל השרת בלבד; מבטל את כל ה-sessions ומנקה נעילה; הסיסמה נקראת בהקלדה נסתרת או מ-stdin, לא מ-argv/env):
 
 ```bash

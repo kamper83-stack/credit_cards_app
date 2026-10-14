@@ -22,8 +22,21 @@ const COMMON = new Set([
   'shalom1234', 'shalom12345', 'ahavatam123', 'ahavatam12',
 ]);
 
-/** Returns a Hebrew error message, or null when the password is acceptable. Length only - no composition rules. */
-export function checkPassword(password: string, email?: string): string | null {
+/** Rejects NUL characters and whitespace-only passwords. Returns a Hebrew message or null. */
+export function passwordShapeError(password: string): string | null {
+  if (password.includes('\u0000')) return 'הסיסמה מכילה תווים לא חוקיים';
+  if (password.trim() === '') return 'הסיסמה לא יכולה להכיל רק רווחים';
+  return null;
+}
+
+/**
+ * Returns a Hebrew error message, or null when the password is acceptable. Length (in Unicode code
+ * points, after NFC normalisation) only - no composition rules.
+ */
+export function checkPassword(rawPassword: string, email?: string): string | null {
+  const password = rawPassword.normalize('NFC');
+  const shape = passwordShapeError(password);
+  if (shape) return shape;
   const len = [...password].length;
   if (len < PASSWORD_MIN) return `הסיסמה קצרה מדי (לפחות ${PASSWORD_MIN} תווים)`;
   if (len > PASSWORD_MAX) return `הסיסמה ארוכה מדי (עד ${PASSWORD_MAX} תווים)`;
