@@ -9,3 +9,10 @@ data
 *.log
 docs
 .github
+data.bak*
+*.bak-*
+.env.*
+!.env.example
+backups
+scripts
+deploy

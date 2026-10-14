@@ -409,6 +409,8 @@ describe('insecure cookie warning', () => {
     const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const { app } = make({ cookieSecure: true });
+      await get(app, '/api/health'); // the container healthcheck (plain http) must not trigger or consume it
+      expect(spy).not.toHaveBeenCalled();
       await get(app, '/api/auth/me'); await get(app, '/api/auth/me');
       expect(spy).toHaveBeenCalledTimes(1);
       spy.mockClear();

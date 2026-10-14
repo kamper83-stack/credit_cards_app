@@ -34,7 +34,9 @@ export function clearSessionCookie(res: Response, cfg: AuthConfig): void {
 export function warnInsecureCookieMode(cfg: AuthConfig) {
   let warned = false;
   return (req: Request, _res: Response, next: NextFunction) => {
-    if (cfg.secure && !warned && req.protocol === 'http') {
+    // /api/health is the container healthcheck (plain http straight to the app, no proxy): it says
+    // nothing about how browsers reach the site and must not use up the one-time warning.
+    if (cfg.secure && !warned && req.protocol === 'http' && req.path !== '/health') {
       warned = true;
       console.warn('WARNING: COOKIE_SECURE is on but a request arrived over plain http. Browsers drop Secure cookies ' +
         'received over http, so logins will not stick. Serve over HTTPS (with X-Forwarded-Proto and a matching TRUST_PROXY) ' +

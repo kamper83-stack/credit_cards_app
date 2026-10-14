@@ -36,10 +36,13 @@ services:
       - RATE_LIMIT_MAX
       - RATE_LIMIT_WINDOW_MS
       - RISEUP_MAX_CONCURRENT
+      - RISEUP_MCP_TIMEOUT_MS
       - RISEUP_USER_RATE_LIMIT_MAX
       - RISEUP_USER_RATE_LIMIT_WINDOW_MS
       - RISEUP_TOKEN_COOLDOWN_MS
     volumes:
+      # The container runs as uid 1000 (user `node`): this directory must be owned by it,
+      # `sudo chown -R 1000:1000 data` (see deploy/DEPLOY.md before the first start / upgrade).
       - ./data:/app/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
