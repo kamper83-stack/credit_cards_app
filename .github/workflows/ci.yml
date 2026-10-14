@@ -4,10 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
-  typecheck:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -19,11 +21,16 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      # Single root package-lock.json covers all workspaces (client + server)
       - name: Install dependencies
-        run: |
-          npm install
-          npm install --workspace=server
-          npm install --workspace=client
+        run: npm ci
 
-      - name: Type-check and build
+      - name: Build client and server
         run: npm run build
+
+      - name: Server tests
+        run: npm test --workspace=server
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true

@@ -30,7 +30,7 @@ npm run dev --workspace=client     # vite
 npm run build --workspace=client   # tsc && vite build -> client/dist
 ```
 
-There is no test suite and no linter configured in this repo.
+Server tests (vitest + supertest, in-memory SQLite via `DB_PATH=:memory:`): `npm test --workspace=server`. There is no client test suite and no linter configured in this repo.
 
 Client also has `npm run deploy` (`gh-pages -d dist`) for publishing the built client to GitHub Pages — see routing note below.
 

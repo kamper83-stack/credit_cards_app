@@ -3,10 +3,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, '../../data/rewards.db');
+// DB_PATH overrides the default location (use ':memory:' or a temp file in tests).
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../../data/rewards.db');
 
 import fs from 'fs';
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+if (DB_PATH !== ':memory:') fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new Database(DB_PATH);
 
