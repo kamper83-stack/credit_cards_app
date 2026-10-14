@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@node-rs/argon2": "^2.2.2",
     "@riseup-oss/mcp": "^0.3.0",
     "better-sqlite3": "^9.6.0",
     "cors": "^2.8.5",
