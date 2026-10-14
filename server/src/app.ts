@@ -11,26 +11,39 @@ import goalsRouter from './routes/goals.js';
 import transactionsRouter from './routes/transactions.js';
 import riseupRouter from './routes/riseup.js';
 
-// TRUST_PROXY: number of proxy hops (default 1 = nginx in front), 'true'/'false',
-// or any other value accepted by Express (e.g. 'loopback', a CIDR list).
+// TRUST_PROXY: which peers may set X-Forwarded-* (affects req.ip and thus rate limiting).
+// Default 'loopback': only a proxy on the same host (nginx -> 127.0.0.1) is trusted, so a
+// direct client cannot spoof X-Forwarded-For. Accepts a hop count, 'true'/'false', or any
+// value Express understands ('loopback, linklocal, uniquelocal', a CIDR list, ...).
+// Avoid a bare hop count when the server is reachable directly (HOST=0.0.0.0).
 function parseTrustProxy(value: string | undefined): boolean | number | string {
-  if (value === undefined || value === '') return 1;
+  if (value === undefined || value === '') return 'loopback';
   if (value === 'true') return true;
   if (value === 'false') return false;
   if (/^\d+$/.test(value)) return Number(value);
   return value;
 }
 
-export function createApp() {
+export interface AppOptions {
+  trustProxy?: boolean | number | string;
+  rateLimitMax?: number;
+  rateLimitWindowMs?: number;
+}
+
+export function createApp(options: AppOptions = {}) {
   const app = express();
 
-  app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
+  app.set('trust proxy', options.trustProxy ?? parseTrustProxy(process.env.TRUST_PROXY));
 
   // Strict CSP for the Vite-built SPA. Google Fonts is loaded from index.html;
   // React `style={}` props need inline style attributes (not inline <style> blocks).
+  // upgrade-insecure-requests is disabled and HSTS is production-only, so plain-HTTP
+  // access (Tailscale IP, local dev) keeps working; browsers ignore HSTS over HTTP anyway.
   app.use(helmet({
+    strictTransportSecurity: process.env.NODE_ENV === 'production',
     contentSecurityPolicy: {
       directives: {
+        upgradeInsecureRequests: null,
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", 'https://fonts.googleapis.com'],
@@ -51,10 +64,11 @@ export function createApp() {
   app.use(express.json({ limit: '100kb' }));
 
   app.use('/api', rateLimit({
-    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-    limit: Number(process.env.RATE_LIMIT_MAX) || 300,
+    windowMs: options.rateLimitWindowMs ?? (Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000),
+    limit: options.rateLimitMax ?? (Number(process.env.RATE_LIMIT_MAX) || 300),
     standardHeaders: 'draft-7',
     legacyHeaders: false,
+    skip: (req) => req.path === '/health', // mounted at /api, so this is /api/health (Docker healthcheck)
   }));
 
   app.use('/api/cards', cardsRouter);
@@ -78,5 +92,3 @@ export function createApp() {
 
   return app;
 }
-
-export const app = createApp();

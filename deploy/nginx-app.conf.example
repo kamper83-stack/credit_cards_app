@@ -14,7 +14,20 @@ server {
         proxy_pass http://127.0.0.1:3001/api/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        # nginx is the edge (first hop) here, so OVERWRITE X-Forwarded-For with the real
+        # peer address instead of appending ($proxy_add_x_forwarded_for) - otherwise a
+        # client-supplied header would be passed through. If another proxy sits in front
+        # of this nginx, use $proxy_add_x_forwarded_for and trust that hop in the app.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
+
+    # The statically served HTML bypasses Express, so send the security headers here.
+    # Keep the CSP identical to server/src/app.ts. Add HSTS only if you serve HTTPS.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    # add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
 
     location / {
         try_files $uri /index.html;

@@ -8,6 +8,8 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: 3001,
         HOST: '127.0.0.1',
+        // nginx runs on the same host and connects via loopback; trust only it.
+        TRUST_PROXY: 'loopback',
       },
     },
   ],

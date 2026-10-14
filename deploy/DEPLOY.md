@@ -46,6 +46,8 @@ HOST=127.0.0.1
 CLIENT_URL=http://<TAILSCALE_IP>
 ```
 
+`TRUST_PROXY` מוגדר ב-`deploy/ecosystem.config.cjs` ל-`loopback` (nginx רץ על אותו שרת ומתחבר דרך 127.0.0.1). אל תשתמשו במספר קפיצות (למשל `1`) כשהשרת נגיש ישירות: לקוח יכול לזייף `X-Forwarded-For` ולעקוף את ה-rate limit.
+
 `HOST=127.0.0.1` חשוב - כך שרת ה-Node לא יאזין לממשק הציבורי של ה-VPS בכלל, רק ל-nginx המקומי.
 
 ## 4. הרצת השרת עם pm2
@@ -65,6 +67,10 @@ sudo sed -i "s#<TAILSCALE_IP>#$(tailscale ip -4)#; s#<APP_PATH>#/opt/rewards-app
 sudo ln -s /etc/nginx/sites-available/rewards-app /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+ה-nginx דורס את `X-Forwarded-For` בכתובת הלקוח האמיתית (`$remote_addr`) כי הוא הקפיצה הראשונה, ושולח כותרות CSP לקבצי ה-HTML הסטטיים (השרת לא מגיש אותם בפריסה זו). הוסיפו HSTS רק אם אתם מגישים HTTPS.
+
+**פריסת Docker:** ה-nginx של המארח (התצורה שלו לא בריפו) חייב גם הוא לשלוח `proxy_set_header X-Forwarded-For $remote_addr;` (או `$proxy_add_x_forwarded_for` אם הוא לא הקפיצה הראשונה) ו-`X-Forwarded-Proto $scheme`. ב-`docker-compose.yml` מוגדר `TRUST_PROXY=loopback,linklocal,uniquelocal` כי הבקשה מגיעה מכתובת ה-gateway הפרטית של רשת ה-bridge ולא מ-loopback. Express שולח HSTS רק ב-`NODE_ENV=production` (דפדפנים מתעלמים ממנו ב-HTTP פשוט) וללא `upgrade-insecure-requests`, כך שגישה ב-HTTP רגיל ממשיכה לעבוד. נתיב `/api/health` פטור מה-rate limit.
 
 שימו לב: ה-`listen` בקובץ הוגדר על כתובת ה-Tailscale בלבד (לא `0.0.0.0`) - כך nginx בכלל לא מאזין על הממשק הציבורי של ה-VPS.
 

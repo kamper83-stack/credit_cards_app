@@ -10,6 +10,10 @@ services:
       - PORT=3000
       - HOST=0.0.0.0
       - TZ=Asia/Jerusalem
+      # Host nginx reaches the container via the Docker bridge gateway (a private
+      # address, not loopback), so trust loopback + private ranges only. Never use a
+      # bare hop count here: it would let direct clients spoof X-Forwarded-For.
+      - TRUST_PROXY=loopback,linklocal,uniquelocal
     volumes:
       - ./data:/app/data
     healthcheck:
