@@ -1,113 +1,379 @@
-# פריסה על VPS (גישה רק דרך Tailscale, בלי חשיפה לאינטרנט)
+# פריסה ותפעול
 
-מדריך זה מניח VPS עם Ubuntu/Debian, בלי דומיין, וגישה רק דרך רשת Tailscale פרטית - האפליקציה לא תיחשף לאינטרנט הציבורי כלל.
+מדריך הפריסה של האפליקציה (רב-משתמשים). הנתיב הראשי הוא **Docker + nginx של המארח + HTTPS** (כך רץ `https://rewards.erankam.dev`). חלופה ל-VPS פרטי עם pm2 ו-Tailscale מופיעה בסעיף 8.
 
-## 1. התקנות בסיסיות ב-VPS
+| אני רוצה... | סעיף |
+|---|---|
+| להבין איך האבטחה בנויה | 1 |
+| התקנה נקייה על שרת חדש | 3 |
+| **לשדרג את rewards.erankam.dev מהגרסה הישנה (משתמש יחיד)** | **4** |
+| גיבוי, החלפת מפתח, איפוס סיסמה, מפתח שאבד, ניטור | 5 |
+| הגדרות ידניות ב-GitHub | 6 |
+| פריסה עם pm2 + Tailscale | 8 |
+
+## 1. ארכיטקטורה ואבטחה
+
+```
+דפדפן --HTTPS--> nginx (המארח) --HTTP--> 127.0.0.1:3006 --> קונטיינר (Node/Express :3000)
+                                                              |-- מגיש את ה-SPA (client/dist) וה-API (/api)
+                                                              |-- SQLite ב-/app/data (מעוגן מ-./data)
+                                                              '-- תהליך משנה: @riseup-oss/mcp (stdio) עם הטוקן של המשתמש
+```
+
+- **אימות:** הרשמה פתוחה, סיסמאות ב-argon2id (10-128 תווים, נורמליזציית NFC). ה-session הוא cookie אטום (`HttpOnly`, `SameSite=Lax`, `Path=/`, בלי `Domain`); ב-DB נשמר רק ה-SHA-256 שלו. פג אחרי 7 ימי חוסר פעילות או 30 יום מוחלטים; כניסה/הרשמה/שינוי סיסמה מחליפים את ה-token, ושינוי סיסמה מבטל את כל ה-sessions. עם `COOKIE_SECURE=true` (ברירת המחדל ב-production) השם הוא `__Host-sid` ויש דגל `Secure`.
+- **בידוד נתונים:** כל נתיב תחת `/api` דורש התחברות (חוץ מ-`register`, `login`, `logout`, `health`), וכל שאילתה מסוננת לפי המשתמש. משאב של משתמש אחר מחזיר 404 זהה למשאב שלא קיים.
+- **CSRF:** לכל בקשה שאינה GET/HEAD/OPTIONS חייב להיות `Origin` (או `Referer`) התואם ל-`Host` של הבקשה (או ל-`ALLOWED_ORIGINS`), וגוף הבקשה חייב להיות `application/json`. לכן nginx חייב להעביר את ה-`Host` המקורי, ו-curl חייב לשלוח `Origin`.
+- **הצפנה:** טוקן ה-RiseUp של כל משתמש מוצפן ב-AES-256-GCM (מפתח `TOKEN_ENC_KEY`, ה-id של המשתמש כ-AAD) ולא חוזר ללקוח (רק תצוגה מוסתרת). `ADMIN_*` ו-`TOKEN_ENC_KEY` לא מועברים לתהליך ה-MCP.
+- **הגבלות קצב:** כניסה לפי IP (20), לפי אימייל+IP (10) ולפי אימייל (100) ב-15 דקות; הרשמה 10 לשעה ל-IP; `/api` כללי 300 ב-15 דקות (`/api/health` פטור); RiseUp: 5 פעולות ל-15 דקות למשתמש, סנכרון אחד בו-זמנית למשתמש ו-`RISEUP_MAX_CONCURRENT` (3) בשרת. נעילת חשבון ל-60 שניות אחרי 5 כשלונות רצופים. הגבלות לפי IP תלויות ב-`TRUST_PROXY` נכון (סעיף 4.5).
+- **כותרות:** CSP קפדני, `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, HSTS ב-production, ו-`Cache-Control: no-store` על כל תשובת `/api`. מגיעות מהאפליקציה עצמה (helmet), כך שב-Docker nginx לא צריך להוסיף אותן.
+- **`@riseup-oss/mcp` הוא גבול האמון:** השרת מפעיל אותו עם `node` על הגרסה שננעלה ב-`package-lock.json` (בלי `npx` ובלי הורדה בזמן ריצה) ומעביר לו את הטוקן. הוא רץ תחת אותו משתמש מערכת כמו השרת, ולכן זה לא בידוד מלא. מעדכנים אותו רק דרך ה-lockfile ובנייה מחדש.
+- **קובץ המסד:** SQLite בהרשאות 600 (בבעלות uid 1000 בקונטיינר, ולכן פקודות `sqlite3` על `data/` במארח דורשות `sudo`). הגנה על הקובץ + המפתח (בנפרד) היא הגנת הטוקנים: מי שמחזיק את שניהם קורא את הטוקנים.
+
+משתני הסביבה כולם מתועדים (עם ברירות מחדל) ב-[`.env.example`](../.env.example), המקור היחיד. אין כאן טבלה כפולה.
+
+## 2. תנאים מקדימים בשרת
+
+Docker Engine + Compose v2, nginx, `openssl`, `curl`, ומומלץ `sqlite3` (`sudo apt install sqlite3`) לבדיקות וגיבוי. תעודת TLS תקפה לדומיין (certbot). Git לשליפת הקוד.
+
+## 3. התקנה חדשה (Docker)
 
 ```bash
-# Node.js LTS
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
-sudo apt install -y nodejs nginx git
+cd /opt && sudo git clone <URL של הריפו> rewards-app && sudo chown -R $USER: rewards-app && cd rewards-app
 
-# pm2 - מנהל תהליכים לשרת Node
-sudo npm install -g pm2
+openssl rand -base64 32          # שמרו את הפלט במנהל סיסמאות לפני שממשיכים
+
+umask 077
+nano .env                        # ראו התוכן למטה
+chmod 600 .env
+
+mkdir -p data && sudo chown -R 1000:1000 data   # הקונטיינר רץ כמשתמש node (uid 1000)
+docker compose build && docker compose up -d
+docker compose logs --tail=20 app               # צפוי: "Server running on http://0.0.0.0:3000"
 ```
 
-## 2. Tailscale
+תוכן `.env` להתקנה חדשה (מסד נקי לא צריך `ADMIN_*`; המשתמש הראשון נרשם דרך האפליקציה):
 
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-# רשמו את הכתובת שמתקבלת - תצטרכו אותה בהמשך
-tailscale ip -4
+```
+TOKEN_ENC_KEY=<הפלט של openssl>
 ```
 
-התחברו גם למכשיר שממנו תרצו לגשת לאפליקציה (נייד/מחשב) לאותו tailnet.
+בלי `TOKEN_ENC_KEY` השרת עולה, אבל שמירת טוקן RiseUp תיכשל (500). ללא TLS (גישה ב-HTTP בלבד, רק לבדיקה מקומית) הוסיפו `COOKIE_SECURE=false`.
 
-## 3. הבאת הקוד ובנייה
+אחר כך הגדירו nginx (סעיף 4.5), הריצו את בדיקת העשן (4.8) ופתחו את האתר.
 
-```bash
-cd /opt
-sudo git clone <URL של הריפו שלכם> rewards-app
-sudo chown -R $USER:$USER rewards-app
-cd rewards-app
+## 4. שדרוג מהגרסה הישנה (משתמש יחיד) ל-rewards.erankam.dev
 
-npm install
-npm run build --workspace=client
-npm run build --workspace=server
+הגרסה הישנה שומרת את הטוקן של RiseUp בטקסט גלוי ב-`data/rewards.db` ואין בה משתמשים. הגרסה החדשה, בהפעלה הראשונה על מסד כזה: בודקת תנאים (קריאה בלבד, בלי לשנות כלום), יוצרת גיבוי חד-פעמי, מוסיפה את הסכמה, יוצרת חשבון מנהל מ-`ADMIN_EMAIL`/`ADMIN_PASSWORD`, משייכת אליו את כל הכרטיסים/העסקאות/היעדים, מצפינה את הטוקן, מוחקת את הטקסט הגלוי (`VACUUM`).
 
-cp .env.example server/.env
-```
+**מה שקורה אם משהו חסר:** אם המפתח או פרטי המנהל חסרים/שגויים השרת יוצא עם `Startup aborted: ...` **והמסד לא משתנה** (גם לא נוצר גיבוי). ב-Docker (`restart: unless-stopped`) הקונטיינר ינסה שוב ושוב עד שתתקנו את `.env`; זה לא מזיק, רק מרעיש.
 
-ערכו את `server/.env`:
-```
-PORT=3001
-HOST=127.0.0.1
-CLIENT_URL=http://<TAILSCALE_IP>
-```
-
-`TRUST_PROXY` מוגדר ב-`deploy/ecosystem.config.cjs` ל-`loopback` (nginx רץ על אותו שרת ומתחבר דרך 127.0.0.1). אל תשתמשו במספר קפיצות (למשל `1`) כשהשרת נגיש ישירות: לקוח יכול לזייף `X-Forwarded-For` ולעקוף את ה-rate limit.
-
-`HOST=127.0.0.1` חשוב - כך שרת ה-Node לא יאזין לממשק הציבורי של ה-VPS בכלל, רק ל-nginx המקומי.
-
-## 3א. סודות והעלאת גרסה ממסד נתונים ישן (multi-user)
-
-השרת מצפין את טוקן ה-RiseUp במסד (AES-256-GCM) ודורש מפתח הצפנה. **יצירת המפתח וגיבוי שלו:**
-
-```bash
-openssl rand -base64 32     # הערך ל-TOKEN_ENC_KEY
-```
-
-- שמרו עותק של המפתח **במקום נפרד מהמסד ומהגיבויים שלו** (מנהל סיסמאות וכד'). בלי המפתח אי אפשר לפענח את הטוקן; מי שמחזיק גם את המפתח וגם את קובץ המסד יכול לקרוא אותו.
-- הגדירו ב-`.env`: `TOKEN_ENC_KEY`, ו-`ADMIN_EMAIL` + `ADMIN_PASSWORD` (לפחות 12 תווים). חלופה ל-`ADMIN_PASSWORD`: `ADMIN_PASSWORD_FILE=/path/to/file` (קובץ עם הסיסמה, שורה חדשה בסוף נחתכת; אין להגדיר את שניהם יחד). ב-Docker יש לעגן את הקובץ כ-volume.
-- **מיקום ה-`.env`:** ב-pm2 ה-`cwd` הוא `server/`, ולכן הקובץ הוא `server/.env` (dotenv טוען מתיקיית העבודה). ב-Docker אין `.env` בתוך האימג'; `docker-compose.yml` מעביר את `TOKEN_ENC_KEY`, `TOKEN_ENC_KEY_VERSION`, `TOKEN_ENC_KEY_PREV`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_PASSWORD_FILE`, וכן `COOKIE_SECURE`, `ALLOWED_ORIGINS`, `LOGIN_RATE_LIMIT_*`, `REGISTER_RATE_LIMIT_*`, `RATE_LIMIT_*` ממשתני הסביבה של המארח או מקובץ `.env` שלצד `docker-compose.yml`.
-
-**מה קורה בהפעלה הראשונה על מסד ישן:** לפני כל שינוי השרת בודק (קריאה בלבד) שהמפתח ופרטי המנהל תקינים; אם לא - הוא יוצא עם הודעת שגיאה והמסד **לא משתנה** (לא נוצר גיבוי ולא משתנה סכמה, כך שגם לולאת restart לא מזיקה). רק אחרי שהבדיקה עברה נוצר גיבוי חד-פעמי `rewards.db.bak-<זמן>` (הרשאות 600), הסכמה מתעדכנת, הכרטיסים והסנכרונים משויכים למנהל והטוקן עובר להצפנה.
-
-**אחרי ההפעלה הראשונה:**
-1. ודאו שהאפליקציה עובדת (הגדרות > סטטוס RiseUp מחובר, סנכרון עובד).
-2. **מחקו את ה-`ADMIN_PASSWORD`** (או את קובץ הסיסמה) מה-`.env`/הסביבה - הוא נדרש רק בריצה הראשונה.
-3. **מחקו את קובץ הגיבוי `rewards.db.bak-*`** (וכל העתק שלו). הוא מכיל את טוקן ה-RiseUp **בטקסט גלוי**; השרת מזהיר על כך בלוג. המסד עצמו מנוקה מהטוקן הישן (`VACUUM`).
-
-**Rollback:** חזרה לגרסה הקודמת של האפליקציה אינה אפשרית עם המסד החדש (הסכמה שונה). יש לעצור את השרת, לשחזר את קובץ הגיבוי `rewards.db.bak-*` במקום `rewards.db` (ולמחוק את קבצי `rewards.db-wal` / `rewards.db-shm`), ואז להריץ את הגרסה הקודמת. לכן מחקו את הגיבוי רק אחרי שהגרסה החדשה אומתה.
-
-### החלפת מפתח הצפנה (rotation)
-
-1. צרו מפתח חדש: `openssl rand -base64 32`, וגבו אותו בנפרד.
-2. ב-`.env`: הערך הנוכחי של `TOKEN_ENC_KEY` עובר ל-`TOKEN_ENC_KEY_PREV`; המפתח החדש נכנס ל-`TOKEN_ENC_KEY`; העלו את `TOKEN_ENC_KEY_VERSION` ב-1 (ברירת מחדל 1, כלומר 1 -> 2).
-3. הפעילו מחדש את השרת (`pm2 restart rewards-server --update-env` / `docker compose up -d`).
-4. חכו להודעה בלוג: `N rows re-encrypted with key version <V>`. (שורות שלא טופלו מוצפנות מחדש גם בעת שימוש ראשון בהן.)
-5. רק אז הסירו את `TOKEN_ENC_KEY_PREV`. אל תדלגו על גרסה: השרת מכיר רק את הגרסה הנוכחית ואת זו שלפניה, ולכן חייבים לסיים rotation (שלב 4) לפני rotation הבא.
-
-אם השרת אינו מצליח לפענח טוקן שמור (מפתח חסר/שגוי/גרסה לא מוכרת) הוא מסרב לעלות ומציין את הסיבה בלוג, בלי לשנות את המסד.
-
-## 3ב. אימות משתמשים (cookies, CSRF, איפוס סיסמה)
-
-- ה-session נשמר ב-cookie בשם `__Host-sid` (דגל `Secure`) כש-`COOKIE_SECURE=true` (ברירת המחדל כש-`NODE_ENV=production`), אחרת `sid` בלי `Secure`. **פריסה ב-HTTP פשוט (כתובת Tailscale בלי TLS) חייבת `COOKIE_SECURE=false`** - אחרת הדפדפן יזרוק את ה-cookie וההתחברות לא תחזיק. עם HTTPS השאירו `true`.
-- ה-nginx חייב להעביר `Host` מקורי (`proxy_set_header Host $host;`, כבר קיים בדוגמה) - בדיקת ה-CSRF משווה את `Origin` ל-`Host`. ה-nginx גם דורס את `X-Forwarded-Host` ב-`$http_host` (כולל פורט). בדיקת ה-CSRF משווה host בלבד ולא סכמה (http/https); זה מכוון, כי הסכמה מגיעה מכותרת שניתנת לזיוף אם `TRUST_PROXY` רחב מדי. מקורות נוספים: `ALLOWED_ORIGINS` (רשימה מופרדת בפסיקים). בקשות לא-דפדפן (curl) חייבות לשלוח `Origin`.
-- `TRUST_PROXY` חייב להיות נכון כדי שה-rate limit לפי IP יעבוד (ראו סעיף nginx). מגבלות הכניסה/הרשמה: משתני `LOGIN_RATE_LIMIT_*` / `REGISTER_RATE_LIMIT_*` ב-`.env.example`.
-- נעילת חשבון: 5 כשלונות רצופים נועלים ל-60 שניות; אחרי שהנעילה פגה המונה מתחיל מאפס (כשלון בודד לא נועל שוב). מגבלת ניסיונות לפי (אימייל + IP) ומגבלה גבוהה (`LOGIN_RATE_LIMIT_EMAIL_GLOBAL_MAX`, ברירת מחדל 100) לפי אימייל בלבד. סיכון שיורי: תוקף עם הרבה כתובות IP יכול עדיין להקשות על משתמש מסוים להתחבר. במקרה כזה נקו את הנעילה עם `reset-password` (למטה). סיסמאות מנורמלות ל-NFC לפני ה-hash.
-- `COOKIE_SECURE` ב-`ecosystem.config.cjs` מוגדר `false` (HTTP פשוט); הגדירו `true` רק מאחורי TLS. אם הוא `true` והשרת רואה בקשת http, נרשמת אזהרה בלוג (פעם אחת).
-- איפוס סיסמה למשתמש (למנהל השרת בלבד; מבטל את כל ה-sessions ומנקה נעילה; הסיסמה נקראת בהקלדה נסתרת או מ-stdin, לא מ-argv/env):
+### 4.1 בדיקות מקדימות
 
 ```bash
 cd /opt/rewards-app
-npm run build --workspace=server
-npm run reset-password --workspace=server -- user@example.com
-# Docker: docker compose exec <service> node server/dist/cli/reset-password.js user@example.com
-# (עם stdin: docker compose exec -T ... < קובץ-סיסמה, או -it להקלדה)
+docker compose version && df -h .          # יש מקום ל-2-3 עותקים של המסד
+ls -la data/                                # rewards.db קיים (בבעלות root בגרסה הישנה)
+git rev-parse HEAD                          # רשמו: זה ה-commit של הגרסה הישנה (לשחזור)
+git status --short                          # צפוי נקי
+docker inspect credit-cards-app --format '{{.Image}}'   # מזהה ה-image הישן
 ```
 
-## 4. הרצת השרת עם pm2
+שמרו את ה-image הישן כדי שאפשר יהיה לחזור בלי לבנות מחדש (גם אם ה-registry לא זמין):
+
+```bash
+docker tag "$(docker inspect credit-cards-app --format '{{.Image}}')" credit-cards-app:legacy
+```
+
+בדקו את המסד הנוכחי ורשמו מספרים להשוואה אחרי השדרוג:
+
+```bash
+sudo sqlite3 data/rewards.db "PRAGMA integrity_check; SELECT count(*) FROM cards; SELECT count(*) FROM transactions; SELECT count(*) FROM goals;"
+```
+
+### 4.2 גיבוי ידני (לפני כל שינוי)
+
+```bash
+# א. גיבוי "חם" עם sqlite (בטוח גם כשהשרת רץ) לתיקייה מחוץ ל-data
+mkdir -p -m 700 ~/rewards-backups
+sudo sqlite3 data/rewards.db ".backup '$HOME/rewards-backups/rewards-legacy-$(date +%Y%m%d-%H%M%S).db'"
+sudo chown "$USER": "$HOME"/rewards-backups/*.db && chmod 600 "$HOME"/rewards-backups/*.db
+
+# ב. עצרו את הגרסה הישנה והעתיקו את כל התיקייה (כולל קבצי -wal/-shm והרשאות)
+docker compose stop app
+sudo cp -a data "data.bak-$(date +%Y%m%d-%H%M%S)"
+sudo chmod 700 data.bak-*
+```
+
+שני הגיבויים מכילים את טוקן ה-RiseUp **בטקסט גלוי**; שמרו אותם בהרשאות מגבילות ואל תעלו לשום מקום. התיקייה `data.bak-*` כבר ב-`.gitignore` וב-`.dockerignore`. אם אין `sqlite3` במארח, דלגו על (א): ההעתקה (ב) בזמן שהקונטיינר עצור היא גיבוי עקבי.
+
+### 4.3 מפתח הצפנה
+
+```bash
+openssl rand -base64 32
+```
+
+- שמרו את הערך **קודם** במנהל סיסמאות (או כספת אחרת) - **לא** באותו מקום שבו נשמרים גיבויי המסד, ולא בתיקיית `data/`. בלי המפתח אי אפשר לפענח את הטוקן שבמסד; מי שיש לו גם את המפתח וגם את המסד קורא אותו.
+- אל תעתיקו את המפתח לצ'אט, לטיקט או ל-commit.
+
+### 4.4 קובץ `.env`
+
+ליד `docker-compose.yml`, בהרשאות 600 (ערכו בעורך, לא עם `echo` שנשמר בהיסטוריית ה-shell):
+
+```bash
+umask 077 && nano .env && chmod 600 .env
+```
+
+```
+TOKEN_ENC_KEY=<המפתח מסעיף 4.3>
+ADMIN_EMAIL=<האימייל שלכם>
+ADMIN_PASSWORD='<לפחות 12 תווים>'
+# COOKIE_SECURE לא מוגדר => true (נכון מאחורי HTTPS). false רק ל-HTTP פשוט.
+```
+
+- `ADMIN_PASSWORD` נדרש רק להפעלה הראשונה (סעיף 4.9). אם הסיסמה מכילה `$`, השאירו אותה בגרשיים בודדים. חלופה `ADMIN_PASSWORD_FILE` דורשת גם volume לקובץ ב-`docker-compose.yml`; הדרך הפשוטה היא `ADMIN_PASSWORD`.
+- `COOKIE_SECURE=true` (ברירת המחדל כאן) נכון רק מאחורי HTTPS **ועם** `X-Forwarded-Proto`. עם `false` ה-cookie נקרא `sid` בלי `Secure` ונשלח גם ב-HTTP: מתאים רק לבדיקה מקומית או ל-Tailscale בלי TLS. ב-`false` ה-session חשוף לצותת ברשת.
+- `TRUST_PROXY=loopback,linklocal,uniquelocal` כבר מוגדר ב-`docker-compose.yml` (אין צורך ב-`.env`).
+- ודאו שהערכים הגיעו לקונטיינר בלי להדפיס אותם (אחרי ההפעלה): `docker compose exec app sh -c 'test -n "$TOKEN_ENC_KEY" && echo key-set'`.
+
+### 4.5 רשימת בדיקה ל-nginx של המארח
+
+תבנית מלאה: [`nginx-docker.conf.example`](nginx-docker.conf.example). לפני השדרוג ודאו בקובץ הקיים (`sudo nginx -T | less`):
+
+- [ ] `proxy_pass http://127.0.0.1:3006;`
+- [ ] `proxy_set_header Host $host;` - הערך המקורי, בלי שינוי (בדיקת CSRF משווה `Origin` ל-`Host`).
+- [ ] `proxy_set_header X-Forwarded-For $remote_addr;` - **דורס**, לא `$proxy_add_x_forwarded_for`, כש-nginx הוא הקפיצה הראשונה. אחרת לקוח יזייף כתובת ויעקוף את ה-rate limit. (אם יש CDN לפני nginx, הגדירו `real_ip` קודם.)
+- [ ] `proxy_set_header X-Forwarded-Proto $scheme;` - בלעדיו עם `COOKIE_SECURE=true` יופיע בלוג `WARNING: COOKIE_SECURE is on but a request arrived over plain http`.
+- [ ] `proxy_set_header X-Forwarded-Host $http_host;` (דורס).
+- [ ] **בלי** `proxy_hide_header`/`add_header` שמשכפלים כותרות אבטחה: האפליקציה שולחת CSP, `nosniff`, `Referrer-Policy`, HSTS ו-`Cache-Control: no-store` על `/api`. אל תוסיפו `expires`/`proxy_cache` על `/api`.
+- [ ] TLS תקף, הפניה מ-80 ל-443, `ssl_protocols TLSv1.2 TLSv1.3`. HSTS נשלח מהאפליקציה; אל תוסיפו עוד אחד.
+- [ ] `client_max_body_size 256k;` (ה-API מקבל JSON קטן, עד 100kb) ו-`proxy_read_timeout 120s` (סנכרון RiseUp יכול לקחת עד 90 שניות).
+- [ ] הפורט `3006` מפורסם רק על `127.0.0.1` (כך ב-`docker-compose.yml`); בדקו שהוא לא נגיש מבחוץ: `curl -m 3 http://<IP ציבורי>:3006` צריך להיכשל.
+
+אחרי שינוי: `sudo nginx -t && sudo systemctl reload nginx`.
+
+### 4.6 בנייה והפעלה
+
+```bash
+git pull --ff-only                      # או: git checkout <תג/commit של השחרור>
+docker compose build                    # משחזר את כל התלויות מ-package-lock (npm ci)
+
+sudo chown -R 1000:1000 data            # הקונטיינר החדש רץ כ-node (uid 1000); גיבויי data.bak-* לא משתנים
+docker compose up -d
+docker compose logs -f app              # Ctrl-C ליציאה
+```
+
+בלי ה-`chown` הקונטיינר החדש לא יצליח לפתוח את המסד ויקרוס (`unable to open database file`), בלי לשנות אותו. תקנו עם הפקודה למעלה והפעילו שוב.
+
+### 4.7 אימות
+
+שורות צפויות בלוג בהפעלה הראשונה (בדיוק סדר זה):
+
+```
+Legacy database detected; backup written to /app/data/rewards.db.bak-<חותמת-זמן>
+WARNING: the RiseUp token was encrypted and the plaintext removed from the database, but the pre-migration backup /app/data/rewards.db.bak-<...> still contains the PLAINTEXT token. Verify the app works, then delete the backup (and any copies of it).
+Server running on http://0.0.0.0:3000
+```
+
+האזהרה היא מכוונת. בהפעלות הבאות רק `Server running ...`. אם מופיע `Startup aborted: ...` - קראו את הסיבה, תקנו את `.env`, והפעילו `docker compose up -d` (המסד לא נגע).
+
+```bash
+docker compose ps                        # STATUS: Up ... (healthy)
+curl -s https://rewards.erankam.dev/api/health            # {"ok":true}
+scripts/smoke-test.sh https://rewards.erankam.dev --no-register   # בדיקות אנונימיות, לא יוצר משתמש
+```
+
+אחר כך בדפדפן:
+
+1. היכנסו עם `ADMIN_EMAIL`/`ADMIN_PASSWORD`. הכרטיסים, העסקאות והיעדים הישנים מופיעים (השוו למספרים מסעיף 4.1).
+2. הגדרות: סטטוס RiseUp מחובר (תצוגה מוסתרת של הטוקן), "סנכרן עכשיו" עובד.
+3. הרשמה והתחברות עם משתמש בדיקה שני (או `scripts/smoke-test.sh https://rewards.erankam.dev` המלא, שיוצר משתמש זמני `smoke-<hex>@example.com`): המשתמש החדש רואה רשימות ריקות ולא את נתוני המנהל.
+4. בדיקת cookie: בכלי המפתחים, `__Host-sid` עם `HttpOnly`, `Secure`, `SameSite=Lax`.
+
+אם ההתחברות "מצליחה" אבל נזרקים בחזרה למסך הכניסה: ה-cookie לא נשמר. סיבות נפוצות: `COOKIE_SECURE=true` בגישה ב-HTTP, או nginx בלי `X-Forwarded-Proto` (ראו אזהרה בלוג).
+
+### 4.8 בדיקת עשן
+
+```bash
+scripts/smoke-test.sh https://rewards.erankam.dev              # מלא: יוצר משתמש בדיקה
+scripts/smoke-test.sh https://rewards.erankam.dev --no-register   # רק בדיקות אנונימיות
+```
+
+הסקריפט בודק: health, 401 לבקשה אנונימית, כותרות אבטחה (CSP, nosniff, `no-store` על `/api`), הגשת ה-SPA, דחיית POST חוצה-מקור (403), ובמצב המלא גם הרשמה, כניסה, `me`, יציאה, דגלי ה-cookie (`HttpOnly`, `Secure` ב-https, `SameSite`), וביטול ה-session בצד השרת (הצגה חוזרת של ה-token הישן מחזירה 401). קוד יציאה 0 = הכול עבר. משתמש הבדיקה **אינו נמחק** (אין מחיקת חשבון באפליקציה); למחיקה ידנית (כשהקונטיינר עצור או דרך הקוד בסעיף 5.2):
+
+```bash
+sudo sqlite3 data/rewards.db "PRAGMA foreign_keys=ON; DELETE FROM users WHERE email LIKE 'smoke-%@example.com'"
+```
+
+(`foreign_keys=ON` נדרש כדי שה-sessions של המשתמש יימחקו איתו; משתמש בדיקה לא מחזיק כרטיסים.)
+
+### 4.9 ניקיון אחרי אימות
+
+**מיד** אחרי שהכול עובד:
+
+```bash
+nano .env                                # מחקו את השורה ADMIN_PASSWORD (ADMIN_EMAIL אפשר להשאיר)
+docker compose up -d                     # יוצר את הקונטיינר מחדש בלי הסיסמה
+```
+
+אחר כך מחיקת הגיבוי עם הטוקן בטקסט גלוי שהשרת יצר (אחרי שוידאתם ש-RiseUp מסונכרן), ושל כל העתק שלו:
+
+```bash
+sudo rm -i data/rewards.db.bak-*         # הגיבוי של האפליקציה, בתוך data/
+```
+
+הגיבוי הידני (`data.bak-*` ו-`~/rewards-backups/rewards-legacy-*.db`) משאירים **מספר ימים** (למשל 7) כדי שיהיה לאן לחזור אם תתגלה בעיה, ואז מוחקים אותו (`sudo rm -r data.bak-*`, `rm ~/rewards-backups/rewards-legacy-*.db`). הם מכילים את הטוקן בטקסט גלוי, ולכן אל תשאירו אותם לטווח ארוך. אם יש חשש שהם דלפו, בטלו את הטוקן בעמוד Developer Tokens של RiseUp וצרו חדש.
+
+### 4.10 Rollback
+
+הגרסה הישנה לא יכולה לרוץ על המסד החדש (הסכמה שונה; היא תקרוס או תפגע בנתונים), ולכן שחזור הקוד חייב להיות מלווה בשחזור המסד:
 
 ```bash
 cd /opt/rewards-app
-pm2 start deploy/ecosystem.config.cjs
-pm2 save
-pm2 startup   # יריץ פקודה עם sudo - הריצו אותה כדי שהשרת יעלה אוטומטית אחרי reboot
+docker compose down
+sudo mv data data.failed-$(date +%Y%m%d-%H%M%S)          # שומרים לבדיקה, לא מוחקים
+sudo cp -a data.bak-<החותמת-שלכם> data                   # הגיבוי מסעיף 4.2 (בבעלות root כמו המקור)
+
+# גרסת הקוד הקודמת: או מה-image ששמרנו...
+docker run -d --name credit-cards-app --restart unless-stopped \
+  -p 127.0.0.1:3006:3000 -v "$PWD/data:/app/data" \
+  -e NODE_ENV=production -e PORT=3000 -e HOST=0.0.0.0 -e TZ=Asia/Jerusalem \
+  credit-cards-app:legacy
+# ...או לבנות מחדש מה-commit שרשמתם בסעיף 4.1:
+#   git checkout <ה-commit הישן> && docker compose up -d --build
 ```
 
-## 5. nginx - הגשת הלקוח + proxy ל-API
+הערות: (1) ה-image הישן והמסד הישן רצים כ-root ולכן אין צורך ב-`chown` לאחר השחזור. (2) כל מה שנוצר אחרי השדרוג (משתמשים חדשים, נתונים שהוזנו) הולך לאיבוד בשחזור; שמרו את `data.failed-*` אם צריך לחלץ משם. (3) ה-cookie של הדפדפן לא תקף בגרסה הישנה, וזה בסדר. (4) אחרי שחזור, כשרוצים לנסות שוב, התחילו מסעיף 4.2 (גיבוי חדש).
+
+## 5. תפעול שוטף
+
+### 5.1 גיבויים שוטפים
+
+המסד כולו בקובץ אחד. גיבוי עקבי גם כשהשרת רץ:
+
+```bash
+sudo sqlite3 data/rewards.db ".backup '$HOME/rewards-backups/rewards-$(date +%F).db'" && sudo chown "$USER": "$HOME"/rewards-backups/*.db && chmod 600 "$HOME"/rewards-backups/*.db
+```
+
+בלי `sqlite3` במארח (נשמר ל-`data/` ולכן יש להעביר החוצה; ה-`node` בקונטיינר רץ כמשתמש node):
+
+```bash
+docker compose exec app node -e "require('better-sqlite3')('/app/data/rewards.db',{readonly:true}).backup('/app/data/rewards-backup.db').then(()=>console.log('ok'))"
+sudo mv data/rewards-backup.db "$HOME/rewards-backups/rewards-$(date +%F).db" && sudo chmod 600 "$HOME"/rewards-backups/rewards-*.db
+```
+
+- הוסיפו ל-cron של root (למשל יומי, בלי `sudo` בפקודה) ושמרו כמה ימים אחורה. אל תעתיקו רק את `rewards.db` בזמן שהשרת רץ (יש גם `-wal`).
+- הגיבוי מכיל טוקנים **מוצפנים**, אבל מפתח ההצפנה **לא** צריך להיות איתו: שמרו אותו נפרד (מנהל סיסמאות). גיבוי בלי המפתח = טוקנים אבודים, אבל כרטיסים/עסקאות/יעדים/משתמשים נשמרים.
+- בדקו שחזור מפעם לפעם: `sqlite3 <גיבוי> "PRAGMA integrity_check"`. לשחזור: עצרו את הקונטיינר, העבירו את `data/rewards.db*` הנוכחי הצידה, העתיקו את הגיבוי ל-`data/rewards.db`, `sudo chown 1000:1000` ו-`docker compose up -d`.
+
+### 5.2 גישה ישירה למסד
+
+כשיש `sqlite3` במארח: `sudo sqlite3 data/rewards.db` (כשמשנים נתונים, עצרו קודם את הקונטיינר, והוסיפו `PRAGMA foreign_keys=ON;` לפני `DELETE`). בלעדיו אפשר להריץ קוד דרך הקונטיינר:
+
+```bash
+docker compose stop app
+docker compose run --rm --no-deps app node -e "const d=require('better-sqlite3')('/app/data/rewards.db');console.log(d.prepare(\"DELETE FROM users WHERE email LIKE 'smoke-%@example.com'\").run())"
+sudo chown -R 1000:1000 data
+docker compose up -d
+```
+
+### 5.3 החלפת מפתח הצפנה (rotation)
+
+1. מפתח חדש: `openssl rand -base64 32`, ושמרו אותו בנפרד במנהל הסיסמאות **לפני** הצעד הבא (המפתח הישן נשאר שמור עד סוף התהליך).
+2. ב-`.env`: הערך הנוכחי של `TOKEN_ENC_KEY` עובר ל-`TOKEN_ENC_KEY_PREV`; המפתח החדש נכנס ל-`TOKEN_ENC_KEY`; `TOKEN_ENC_KEY_VERSION` עולה ב-1 (ברירת מחדל 1, כלומר 1 -> 2).
+3. `docker compose up -d` (pm2: `pm2 restart rewards-server --update-env`).
+4. חכו לשורה בלוג: `N rows re-encrypted with key version <V>`.
+5. רק אז מחקו את `TOKEN_ENC_KEY_PREV` מה-`.env` והפעילו שוב. אל תדלגו על גרסה: השרת מכיר רק את הנוכחית ואת הקודמת לה, לכן מסיימים rotation (שלב 4) לפני rotation הבא.
+6. גיבויים ישנים נשארים מוצפנים במפתח הישן; כדי שיהיה אפשר לקרוא אותם, שמרו את המפתחות הישנים כל עוד הגיבויים קיימים.
+
+### 5.4 איפוס סיסמה / ניקוי נעילה (למנהל השרת)
+
+מבטל את כל ה-sessions של המשתמש ומנקה נעילה. הסיסמה נקראת בהקלדה נסתרת או מ-stdin, לא מ-argv:
+
+```bash
+docker compose exec app node server/dist/cli/reset-password.js user@example.com              # אינטראקטיבי (בקשה לסיסמה פעמיים)
+printf '%s\n' 'הסיסמה-החדשה' | docker compose exec -T app node server/dist/cli/reset-password.js user@example.com   # מ-stdin (יופיע בהיסטוריה; עדיף הקלדה)
+```
+
+ה-CLI משתמש במשתני הסביבה של הקונטיינר (נדרש `TOKEN_ENC_KEY` כשיש טוקנים שמורים). ללא Docker: `npm run build --workspace=server && npm run reset-password --workspace=server -- user@example.com` (ב-`server/` עם `.env`).
+
+### 5.5 אם `TOKEN_ENC_KEY` אבד
+
+הסימפטום: `Startup aborted: Cannot decrypt the stored RiseUp token ...`.
+
+1. חפשו קודם: מנהל סיסמאות, `.env` ישן/גיבוי של השרת, היסטוריית פריסה. המפתח הישן עדיין יכול להיות ב-`TOKEN_ENC_KEY_PREV` או בגיבוי של `.env`.
+2. אם אי אפשר לשחזר אותו, הטוקנים אבודים, אבל **שאר הנתונים נשמרים**: עצרו את הקונטיינר, גבו את המסד (סעיף 5.1/4.2), מחקו את הטוקנים המוצפנים, צרו מפתח חדש, והפעילו:
+
+```bash
+docker compose stop app
+sudo sqlite3 data/rewards.db "DELETE FROM user_riseup"       # או הקטע של node בסעיף 5.2
+# .env: TOKEN_ENC_KEY=<מפתח חדש>, TOKEN_ENC_KEY_VERSION=1, בלי TOKEN_ENC_KEY_PREV
+sudo chown -R 1000:1000 data                           # sqlite3 עם sudo עלול להשאיר קבצים בבעלות root
+docker compose up -d
+```
+
+כל משתמש יזין מחדש את טוקן ה-RiseUp בהגדרות (ואפשר לבטל את הישן ב-Developer Tokens). כרטיסים, עסקאות, יעדים וחשבונות נשארים.
+
+### 5.6 ניטור ולוגים
+
+```bash
+docker compose logs -f app            # לוג חי
+docker compose logs --since 1h app | grep -E "WARNING|Startup aborted|Unhandled|failed"
+docker compose ps                     # חייב להיות (healthy)
+docker inspect credit-cards-app --format '{{.State.Health.Status}} restarts={{.RestartCount}}'
+```
+
+הודעות שכדאי להכיר: `Startup aborted: ...` (תצורה שגויה, המסד לא נגע), `WARNING: COOKIE_SECURE is on but a request arrived over plain http` (nginx בלי `X-Forwarded-Proto` או `TRUST_PROXY` שגוי), `Session cleanup: removed N expired session(s)` (תקין), `Unhandled error: ...` (באג; הלקוח מקבל רק 500 כללי), `N rows re-encrypted ...` (rotation). לוגים של Docker לא מכילים סיסמאות או טוקנים (הטוקן מוסתר גם בשגיאות RiseUp). הגדירו ניטור חיצוני פשוט (UptimeRobot / cron עם `curl -fsS https://rewards.erankam.dev/api/health`) והגבילו את גודל הלוגים (`logging: driver: json-file, options: max-size` ב-compose או `/etc/docker/daemon.json`).
+
+### 5.7 עדכון גרסה
+
+```bash
+cd /opt/rewards-app && git pull --ff-only
+docker compose build && docker compose up -d
+scripts/smoke-test.sh https://rewards.erankam.dev --no-register
+```
+
+לפני עדכון שמשנה סכמה, קחו גיבוי (5.1). ה-image נבנה מ-`package-lock.json` (`npm ci`), כולל הגרסה של `@riseup-oss/mcp`.
+
+## 6. הגדרות ידניות ב-GitHub (פעם אחת)
+
+אלה הגדרות בממשק של GitHub, שאי אפשר לעשות מהקוד:
+
+- [ ] **GitHub Pages הופסק:** האתר עובד רק מהשרת. ב-Settings > Pages שנו את Source ל-**None** (כבו Pages), ומחקו את הענף `gh-pages`: `git push origin --delete gh-pages` (או Code > Branches). כך לא נשארת עותק ישן של הלקוח שמצביע לשרת שלא קיים.
+- [ ] **Branch protection** ל-`main` (Settings > Branches): Require a pull request, **Require status checks to pass** עם הבדיקות `build-and-test` ו-`docker-build` מ-CI, ו-Require branches to be up to date; חסמו force-push ומחיקה.
+- [ ] **Secret scanning + Push protection** (Settings > Code security): הפעלה של שניהם.
+- [ ] **Dependabot alerts** (ורצוי גם Dependabot security updates) לאותה מטרה; בנוסף ה-CI מריץ `npm audit --omit=dev` (כרגע לא חוסם).
+- [ ] הרשאות Actions: Settings > Actions > General: Workflow permissions = Read repository contents (ה-CI כבר מצהיר `contents: read`).
+- [ ] ודאו שאין סודות ב-Actions/Variables שלא נחוצים, ושה-`.env` ו-`data/` לא נכנסו ל-git (`git status`, ו-`git log --all -- .env data` ריק).
+
+## 7. הערות כלליות
+
+- טוקן ה-RiseUp (PAT) הוא read-only ופג תוקף אחרי 30 יום: יש לחדש אותו בהגדרות מדי פעם.
+- הקונטיינר רץ כמשתמש לא-root (`node`, uid 1000) ועם HEALTHCHECK. התיקייה `./data` חייבת להיות בבעלותו (`sudo chown -R 1000:1000 data`). ה-CLI שמורץ עם `docker compose exec` רץ באותו משתמש, ולכן הקבצים שהוא יוצר ב-`data/` נשארים תקינים (אל תריצו אותו עם `-u root`, כדי לא ליצור קבצי `-wal` בבעלות root).
+- שרת בודד בלבד: הגבלות הקצב ומנגנון ה-RiseUp בזיכרון, ולכן אין להריץ כמה עותקים של השרת על אותו מסד.
+
+## 8. חלופה: VPS פרטי עם pm2 ו-Tailscale (בלי Docker)
+
+מתאים לגישה רק דרך רשת Tailscale פרטית, בלי דומיין ובלי TLS ציבורי. אותה אפליקציה ואותם סודות (סעיפים 1, 4.3, 5), עם ההבדלים הבאים.
+
+```bash
+# התקנות: Node.js LTS, nginx, git, pm2; ו-Tailscale (sudo tailscale up; tailscale ip -4)
+cd /opt && sudo git clone <URL> rewards-app && sudo chown -R $USER: rewards-app && cd rewards-app
+npm ci
+npm run build
+cp .env.example server/.env && chmod 600 server/.env
+```
+
+ערכו את `server/.env` (dotenv טוען מתיקיית העבודה של השרת, כלומר `server/`): לפחות `TOKEN_ENC_KEY` (ו-`ADMIN_EMAIL`/`ADMIN_PASSWORD` בשדרוג מגרסה ישנה, ראו סעיף 4). ב-`deploy/ecosystem.config.cjs` כבר מוגדרים `HOST=127.0.0.1`, `PORT=3001`, `TRUST_PROXY=loopback` ו-`COOKIE_SECURE=false`:
+
+- **`COOKIE_SECURE=false` נכון כאן רק כי הגישה ב-HTTP פשוט** (כתובת Tailscale בלי TLS); הדפדפן היה זורק cookie עם `Secure`. אם מוסיפים TLS, שנו ל-`true`.
+- `TRUST_PROXY=loopback`: nginx רץ באותו שרת. אל תשתמשו בספירת קפיצות (`1`) כשהשרת נגיש ישירות.
+
+```bash
+pm2 start deploy/ecosystem.config.cjs && pm2 save
+pm2 startup          # מריץ פקודה עם sudo, כדי לעלות אחרי reboot
+```
+
+nginx מגיש את הלקוח הסטטי (`client/dist`) ומעביר `/api` לשרת. התבנית [`nginx-app.conf.example`](nginx-app.conf.example) כוללת את הכותרות ([`nginx-security-headers.conf`](nginx-security-headers.conf), שמשכפלות את ה-CSP של האפליקציה כי nginx מגיש את ה-HTML בעצמו), `Cache-Control: no-store` על `/api`, ודריסת `X-Forwarded-For`/`Host`/`X-Forwarded-Host`:
 
 ```bash
 sudo cp deploy/nginx-app.conf.example /etc/nginx/sites-available/rewards-app
@@ -116,45 +382,12 @@ sudo ln -s /etc/nginx/sites-available/rewards-app /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-כותרות האבטחה משותפות ב-`deploy/nginx-security-headers.conf` (נטען ב-`include`; ההעתקה לנתיב `<APP_PATH>` כבר חלק מהפריסה). ה-nginx שולח `Cache-Control: no-store` על כל תשובות ה-API, `no-cache` על `index.html` ו-`immutable` על `/assets/`. ה-nginx דורס את `X-Forwarded-For` בכתובת הלקוח האמיתית (`$remote_addr`) כי הוא הקפיצה הראשונה, ושולח כותרות CSP לקבצי ה-HTML הסטטיים (השרת לא מגיש אותם בפריסה זו). הוסיפו HSTS רק אם אתם מגישים HTTPS.
-
-**פריסת Docker:** ה-nginx של המארח (התצורה שלו לא בריפו) חייב גם הוא לשלוח `proxy_set_header X-Forwarded-For $remote_addr;` (או `$proxy_add_x_forwarded_for` אם הוא לא הקפיצה הראשונה) ו-`X-Forwarded-Proto $scheme`. ב-`docker-compose.yml` מוגדר `TRUST_PROXY=loopback,linklocal,uniquelocal` כי הבקשה מגיעה מכתובת ה-gateway הפרטית של רשת ה-bridge ולא מ-loopback. Express שולח HSTS רק ב-`NODE_ENV=production` (דפדפנים מתעלמים ממנו ב-HTTP פשוט) וללא `upgrade-insecure-requests`, כך שגישה ב-HTTP רגיל ממשיכה לעבוד. נתיב `/api/health` פטור מה-rate limit.
-
-שימו לב: ה-`listen` בקובץ הוגדר על כתובת ה-Tailscale בלבד (לא `0.0.0.0`) - כך nginx בכלל לא מאזין על הממשק הציבורי של ה-VPS.
-
-## 6. חומת אש (הגנה כפולה)
+ה-`listen` מוגדר על כתובת ה-Tailscale בלבד (לא `0.0.0.0`), כך ש-nginx לא מאזין לממשק הציבורי. חומת אש כהגנה כפולה:
 
 ```bash
-sudo ufw allow OpenSSH
-sudo ufw allow in on tailscale0
-sudo ufw enable
-sudo ufw status
+sudo ufw allow OpenSSH && sudo ufw allow in on tailscale0 && sudo ufw enable
 ```
 
-כך גם אם משהו יוגדר לא נכון ב-nginx, אין גישה מבחוץ ל-VPS מלבד SSH.
+גישה: `http://<TAILSCALE_IP>/`. בדיקת עשן: `scripts/smoke-test.sh http://<TAILSCALE_IP>` (תראו אזהרה על cookie בלי `Secure`, וזה צפוי כאן).
 
-## 7. גישה לאפליקציה
-
-מכל מכשיר שמחובר לאותו tailnet:
-```
-http://<TAILSCALE_IP>/
-```
-
-## עדכון האפליקציה בהמשך
-
-```bash
-cd /opt/rewards-app
-git pull
-npm install
-npm run build --workspace=client
-npm run build --workspace=server
-pm2 restart rewards-server
-```
-
-## הערות
-
-- טוקן ה-RiseUp (PAT) פג תוקף אחרי 30 יום - תצטרכו להתחבר מחדש בעמוד ההגדרות מדי פעם.
-- מסד הנתונים (`server/data/rewards.db`) הוא קובץ SQLite מקומי על ה-VPS - גבו אותו אם חשוב לכם לשמר היסטוריה.
-- יש חשבונות והתחברות (`/api/auth/*`), וכל נתיבי הנתונים (cards/goals/transactions/riseup) דורשים התחברות ומבודדים לפי משתמש (בקשה למשאב של משתמש אחר מחזירה 404). עדיין מומלץ להשאיר את השרת מאחורי Tailscale/HTTPS. ל-RiseUp: סנכרון אחד בו-זמנית למשתמש, ועד `RISEUP_MAX_CONCURRENT` (ברירת מחדל 3) תהליכי MCP במקביל בשרת; תהליך ה-MCP לא יורש את סודות השרת (`TOKEN_ENC_KEY`, `ADMIN_*` וכו').
-- `@riseup-oss/mcp` הוא גבול האמון: השרת מפעיל אותו כתהליך משנה (`node` על הגרסה המותקנת מה-lockfile, ללא `npx` וללא הורדה בזמן ריצה) ומעביר לו את הטוקן של RiseUp. תהליך זה רץ תחת אותו משתמש מערכת (uid) כמו השרת, ולכן טכנית יכול לקרוא את סביבת השרת וקובץ ה-DB; הסביבה שלו מצומצמת, אך זה לא בידוד. יש לעדכן אותו רק דרך `package-lock.json` (`npm ci` / בנייה מחדש של ה-image) ולבדוק שינויי גרסה לפני פריסה.
-- הגבלות RiseUp לכל משתמש: `RISEUP_USER_RATE_LIMIT_MAX` (ברירת מחדל 5) לכל `RISEUP_USER_RATE_LIMIT_WINDOW_MS` (ברירת מחדל 15 דקות) של בדיקות טוקן וסנכרונים, וקולדאון `RISEUP_TOKEN_COOLDOWN_MS` (30 שניות) אחרי בדיקת טוקן שנכשלה; חריגה מחזירה 429.
+עדכון: `git pull --ff-only && npm ci && npm run build && pm2 restart rewards-server --update-env`. איפוס סיסמה: `npm run build --workspace=server && npm run reset-password --workspace=server -- user@example.com`. גיבוי: `sqlite3 data/rewards.db ".backup ..."`. המסד נמצא ב-`data/rewards.db` בשורש הריפו (או לפי `DB_PATH`), לא ב-`server/`.
