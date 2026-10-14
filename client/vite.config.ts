@@ -1,9 +1,9 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  base: process.env.VITE_BASE_URL ?? "/credit_cards_app/",
   plugins: [react()],
+  test: { environment: "jsdom", include: ["src/**/*.test.{ts,tsx}"] },
   server: {
     proxy: {
       // changeOrigin must stay false: the server's CSRF check compares the browser's Origin

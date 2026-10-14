@@ -32,7 +32,7 @@ npm run build --workspace=client   # tsc && vite build -> client/dist
 
 Server tests (vitest + supertest, in-memory SQLite via `DB_PATH=:memory:`): `npm test --workspace=server`. There is no client test suite and no linter configured in this repo.
 
-Client also has `npm run deploy` (`gh-pages -d dist`) for publishing the built client to GitHub Pages — see routing note below.
+Client tests: `npm test --workspace=client` (vitest + Testing Library + jsdom; run in CI).
 
 ## Architecture
 
@@ -72,14 +72,16 @@ Grouping key: `accountKey()` uses `transaction.accountNumberHash` when present (
 ### Client
 
 - Vite + React 18 + TypeScript, React Router (`client/src/App.tsx`), TanStack Query for all server state, axios instance with `baseURL: '/api'` (`client/src/api/index.ts`).
-- **`vite.config.ts` sets `base: "/credit_cards_app/"`** for GitHub Pages hosting, and `main.tsx` passes `basename={import.meta.env.BASE_URL}` into `BrowserRouter` to match — both must stay in sync if the deploy path changes.
+- The SPA is served from the domain root (`/`) by the Node server / nginx; there is no GitHub Pages hosting, no `base` override and no router `basename`. Keep the dev proxy `changeOrigin: false` in `vite.config.ts` (the server's CSRF check compares `Origin` with `Host`).
+- **Auth flow:** the session is an HttpOnly cookie the client never reads. `auth/AuthContext.tsx` (`AuthProvider`/`useAuth`) probes `GET /auth/me` once (status `loading | authenticated | anonymous`) and exposes login/register/logout/changePassword mutations. `App.tsx` routes: `/login` and `/register` are wrapped in `GuestRoute` (signed-in users are bounced to `/`), everything else in `ProtectedRoute` (spinner while loading, then redirect to `/login` with the intended path in router state). `AppLayout` (header, `AutoSync`, all data pages) is only mounted when authenticated, so no data query or sync fires before `/me` resolves or on login screens. The redirect target goes through `lib/safeRedirect.ts` (same-origin relative paths only; open-redirect guard).
+- **Cache isolation (critical):** every change of user (login, register, logout, or a 401) goes through `applyUser` in `AuthContext`, which calls `queryClient.clear()` BEFORE publishing the new user, so user B never sees user A's cached data. The axios response interceptor in `api/index.ts` calls the registered unauthorized handler on any 401 from a non-`/auth/*` request. Don't add `withCredentials` (same-origin) and don't cache auth state in localStorage.
+- Shared error/validation helpers live in `lib/errors.ts` (Hebrew messages for 409/429/503 from RiseUp sync/token, auth form validation mirroring server rules: 10-128 char passwords). `transactionsApi.delete(id, card_id)` must pass `card_id` (server disambiguates synced rows).
 - Pages under `client/src/pages/`, reusable UI under `client/src/components/`; shared API response types in `client/src/types/index.ts` mirror the server's SQL row shapes (including the computed goal fields above) — update both sides together when changing a route's response shape.
 
 ### Deployment
 
-Two deployment targets exist side by side, documented in [deploy/DEPLOY.md](deploy/DEPLOY.md):
-- Client as a static build to GitHub Pages (`base: "/credit_cards_app/"`).
-- Server + client together on a private VPS reachable only via Tailscale (nginx reverse-proxies `/api` to the Node process; `pm2` via `deploy/ecosystem.config.cjs` keeps it running; server binds `HOST=127.0.0.1` so it's never reachable except through nginx). Accounts, sessions and per-user data isolation are in place (phases 3-4); see DEPLOY.md for what is still required before exposing this beyond Tailscale.
+The deployment is documented in [deploy/DEPLOY.md](deploy/DEPLOY.md):
+- Server + client together (the server also serves the built client) on a private VPS reachable only via Tailscale (nginx reverse-proxies `/api` to the Node process; `pm2` via `deploy/ecosystem.config.cjs` keeps it running; server binds `HOST=127.0.0.1` so it's never reachable except through nginx). Accounts, sessions and per-user data isolation are in place (phases 3-4); see DEPLOY.md for what is still required before exposing this beyond Tailscale.
 
 ### Security notes specific to this app
 

@@ -10,8 +10,8 @@ COPY client/package.json ./client/
 COPY server/package.json ./server/
 RUN npm ci
 COPY . .
-# VITE_BASE_URL=/ so assets load from domain root (credit.erankam.dev)
-RUN VITE_BASE_URL=/ npm run build
+# The SPA is built for the domain root ('/'), served by the Node server
+RUN npm run build
 
 # Stage 2: runtime
 FROM node:22-alpine
