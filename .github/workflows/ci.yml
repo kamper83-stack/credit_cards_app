@@ -4,10 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
-  typecheck:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -19,11 +21,63 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      # Single root package-lock.json covers all workspaces (client + server)
       - name: Install dependencies
-        run: |
-          npm install
-          npm install --workspace=server
-          npm install --workspace=client
+        run: npm ci
 
-      - name: Type-check and build
+      - name: Build client and server
         run: npm run build
+
+      - name: Server tests
+        run: npm test --workspace=server
+
+      - name: Client tests
+        run: npm test --workspace=client
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
+
+  # Builds the production image (Dockerfile) without pushing it, so a broken native module,
+  # missing runtime file or Dockerfile error shows up in the PR instead of at deploy time.
+  # Then starts it on a throwaway data dir and runs scripts/smoke-test.sh against it.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t credit-cards-app:ci .
+
+      - name: Check native modules and runtime files in the image
+        run: |
+          docker run --rm --entrypoint sh credit-cards-app:ci -c '
+            set -e
+            test "$(id -u)" != 0
+            node -e "require(\"@node-rs/argon2\"); new (require(\"better-sqlite3\"))(\":memory:\").close(); console.log(require.resolve(\"@riseup-oss/mcp\"))"
+            test -f server/dist/index.js && test -f server/dist/cli/reset-password.js && test -f client/dist/index.html'
+
+      - name: Start container and run smoke test
+        run: |
+          mkdir ci-data && chmod 777 ci-data
+          # Throwaway admin (created on first start from ADMIN_*) so we can mint a single-use invite;
+          # registration is invite-only, so the smoke test's account checks need one.
+          docker run -d --name app -p 127.0.0.1:3000:3000 -v "$PWD/ci-data:/app/data" \
+            -e COOKIE_SECURE=false \
+            -e ADMIN_EMAIL=ci-admin@example.com -e ADMIN_PASSWORD="ci-admin-$(openssl rand -hex 12)" \
+            -e TOKEN_ENC_KEY="$(openssl rand -base64 32)" credit-cards-app:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          # The CLI prints "/register#invite=<token>" as its last line; keep only the token.
+          # (The CLI parses argv strictly: unknown flags / flags without a value exit 2, so keep flags exact.)
+          SMOKE_INVITE="$(docker exec app node server/dist/cli/create-invite.js --uses 1 --label ci-smoke | tail -n 1 | sed 's/.*invite=//')"
+          test -n "$SMOKE_INVITE"
+          export SMOKE_INVITE
+          scripts/smoke-test.sh http://127.0.0.1:3000
+
+      - name: Container logs
+        if: always()
+        run: docker logs app || true

@@ -1,12 +1,20 @@
 import { Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { LayoutDashboard, CreditCard, ArrowLeftRight, Trophy, Settings as SettingsIcon } from 'lucide-react';
+import { LayoutDashboard, CreditCard, ArrowLeftRight, Trophy, Settings as SettingsIcon, ShieldCheck } from 'lucide-react';
 import { Dashboard } from './pages/Dashboard';
 import { Cards } from './pages/Cards';
 import { Transactions } from './pages/Transactions';
 import { Settings } from './pages/Settings';
+import { Admin } from './pages/Admin';
+import { useAuth } from './auth/AuthContext';
 import { AutoSync } from './components/AutoSync';
+import { UserMenu } from './components/UserMenu';
+import { Login } from './pages/Login';
+import { Register } from './pages/Register';
+import { GuestRoute, ProtectedRoute } from './auth/routes';
 
-const nav = [
+type NavItem = { to: string; label: string; icon: typeof ShieldCheck; exact?: boolean };
+const adminNav: NavItem = { to: '/admin', label: 'ניהול', icon: ShieldCheck };
+const baseNav: NavItem[] = [
   { to: '/', label: 'סקירה כללית', icon: LayoutDashboard, exact: true },
   { to: '/cards', label: 'כרטיסים', icon: CreditCard },
   { to: '/transactions', label: 'עסקאות', icon: ArrowLeftRight },
@@ -14,6 +22,20 @@ const nav = [
 ];
 
 export default function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<GuestRoute><Login /></GuestRoute>} />
+      <Route path="/register" element={<GuestRoute><Register /></GuestRoute>} />
+      <Route path="/*" element={<ProtectedRoute><AppLayout /></ProtectedRoute>} />
+    </Routes>
+  );
+}
+
+// Everything below is only mounted for an authenticated user, so AutoSync and every data query
+// start after /auth/me has resolved and never run on the login screens.
+function AppLayout() {
+  const { user } = useAuth();
+  const nav = user?.isAdmin ? [...baseNav, adminNav] : baseNav;
   return (
     <div className="min-h-screen flex flex-col">
       <AutoSync />
@@ -24,6 +46,7 @@ export default function App() {
             <Trophy size={20} className="text-amber-400" />
             <span className="font-bold text-white">מעקב הטבות כרטיסי אשראי</span>
           </div>
+          <div className="flex items-center gap-1">
           <nav className="flex items-center gap-1">
             {nav.map(({ to, label, icon: Icon, exact }) => (
               <NavLink
@@ -41,6 +64,8 @@ export default function App() {
               </NavLink>
             ))}
           </nav>
+          <UserMenu />
+          </div>
         </div>
       </header>
 
@@ -51,6 +76,7 @@ export default function App() {
           <Route path="/cards" element={<Cards />} />
           <Route path="/transactions" element={<Transactions />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/admin" element={user?.isAdmin ? <Admin /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

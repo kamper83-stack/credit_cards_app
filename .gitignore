@@ -4,3 +4,8 @@ data/
 .env
 *.db
 .DS_Store
+data.bak*
+*.bak-*
+.env.*
+!.env.example
+backups/

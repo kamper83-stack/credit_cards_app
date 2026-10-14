@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, CreditCard, RefreshCw, Link2 } from 'lucide-react';
 import { cardsApi, riseupApi } from '../api';
 import { CardTile } from '../components/CardTile';
+import { statusOf, riseupErrorMessage } from '../lib/errors';
 import { AddCardModal } from '../components/AddCardModal';
 import { EditCardModal } from '../components/EditCardModal';
 
@@ -27,7 +28,13 @@ export function Cards() {
   const deleteCard = useMutation({
     mutationFn: cardsApi.delete,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['cards'] }),
-    onError: () => setFormError('מחיקת הכרטיס נכשלה'),
+    onError: (e: unknown) => {
+      if (statusOf(e) === 404) { // already gone (deleted elsewhere): just refresh the list
+        qc.invalidateQueries({ queryKey: ['cards'] });
+        qc.invalidateQueries({ queryKey: ['goals'] });
+        setFormError('הכרטיס כבר נמחק. הרשימה רועננה.');
+      } else setFormError('מחיקת הכרטיס נכשלה');
+    },
   });
 
   const updateCard = useMutation({
@@ -44,7 +51,7 @@ export function Cards() {
       qc.invalidateQueries({ queryKey: ['goals'] });
       qc.invalidateQueries({ queryKey: ['transactions'] });
     },
-    onError: (e: any) => setSyncMsg({ msg: e.response?.data?.error || 'שגיאה בסנכרון', ok: false }),
+    onError: (e: unknown) => setSyncMsg({ msg: riseupErrorMessage(e, 'שגיאה בסנכרון'), ok: false }),
   });
 
   return (

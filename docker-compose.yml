@@ -10,11 +10,39 @@ services:
       - PORT=3000
       - HOST=0.0.0.0
       - TZ=Asia/Jerusalem
+      # Host nginx reaches the container via the Docker bridge gateway (a private
+      # address, not loopback), so trust loopback + private ranges only. Never use a
+      # bare hop count here: it would let direct clients spoof X-Forwarded-For.
+      - TRUST_PROXY=loopback,linklocal,uniquelocal
+      # Secrets are passed through from the host environment / .env file, never inline.
+      # ADMIN_PASSWORD is only needed on the first run; remove it afterwards.
+      - TOKEN_ENC_KEY
+      - TOKEN_ENC_KEY_VERSION
+      - TOKEN_ENC_KEY_PREV
+      - ADMIN_EMAIL
+      - ADMIN_PASSWORD
+      - ADMIN_PASSWORD_FILE
+      # Auth / rate-limit tuning, passed through from the host environment / .env when set (names
+      # only). Unset means COOKIE_SECURE=true in production (HTTPS only); set COOKIE_SECURE=false
+      # for plain-HTTP access, otherwise logins will not stick over http.
+      - COOKIE_SECURE
+      - ALLOWED_ORIGINS
+      - LOGIN_RATE_LIMIT_IP_MAX
+      - LOGIN_RATE_LIMIT_EMAIL_MAX
+      - LOGIN_RATE_LIMIT_EMAIL_GLOBAL_MAX
+      - LOGIN_RATE_LIMIT_WINDOW_MS
+      - REGISTER_RATE_LIMIT_MAX
+      - REGISTER_RATE_LIMIT_WINDOW_MS
+      - RATE_LIMIT_MAX
+      - RATE_LIMIT_WINDOW_MS
+      - RISEUP_MAX_CONCURRENT
+      - RISEUP_MCP_TIMEOUT_MS
+      - RISEUP_USER_RATE_LIMIT_MAX
+      - RISEUP_USER_RATE_LIMIT_WINDOW_MS
+      - RISEUP_TOKEN_COOLDOWN_MS
     volumes:
+      # The container runs as uid 1000 (user `node`): this directory must be owned by it,
+      # `sudo chown -R 1000:1000 data` (see deploy/DEPLOY.md before the first start / upgrade).
       - ./data:/app/data
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    # The healthcheck (interval, start period, retries) lives only in the Dockerfile HEALTHCHECK, so
+    # there is a single source of truth; `docker compose ps` shows its (healthy) status.

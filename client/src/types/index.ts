@@ -63,3 +63,43 @@ export interface RiseupSyncResult {
   transactionsSynced?: number;
   monthsSynced?: string[];
 }
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  isAdmin: boolean;
+}
+
+export type InviteStatus = 'active' | 'expired' | 'revoked' | 'exhausted';
+
+export interface AdminInvite {
+  id: string;
+  label: string | null;
+  maxUses: number;
+  usedCount: number;
+  expiresAt: number;
+  revokedAt: number | null;
+  createdAt: number;
+  status: InviteStatus;
+}
+
+/** Returned once by POST /admin/invites; `token` is never listed again. */
+export interface CreatedInvite {
+  id: string;
+  token: string;
+  path: string;
+  label: string | null;
+  maxUses: number;
+  expiresAt: number;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  isAdmin: boolean;
+  disabled: boolean;
+  createdAt: number;
+  lastSeen: number | null;
+  inviteLabel: string | null;
+  cardCount: number;
+}

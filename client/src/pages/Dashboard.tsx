@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, TrendingUp, Trophy, AlertCircle } from 'lucide-react';
 import { cardsApi, goalsApi } from '../api';
 import { GoalCard } from '../components/GoalCard';
+import { statusOf } from '../lib/errors';
 import { AddGoalModal } from '../components/AddGoalModal';
 import type { Goal } from '../types';
 
@@ -21,7 +22,12 @@ export function Dashboard() {
   const deleteGoal = useMutation({
     mutationFn: goalsApi.delete,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['goals'] }),
-    onError: () => setError('מחיקת היעד נכשלה'),
+    onError: (e: unknown) => {
+      if (statusOf(e) === 404) { // already gone: refresh instead of failing
+        qc.invalidateQueries({ queryKey: ['goals'] });
+        setError('היעד כבר נמחק. הרשימה רועננה.');
+      } else setError('מחיקת היעד נכשלה');
+    },
   });
 
   const addGoal = useMutation({
