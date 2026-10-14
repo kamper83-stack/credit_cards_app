@@ -230,13 +230,4 @@ function openAtStartup(): Database.Database {
 
 const db = openAtStartup();
 
-/**
- * TODO(phase3/4): temporary single-owner shim. Until routes are scoped per authenticated
- * user, every route acts on behalf of the admin (first user). Remove in phase 4.
- */
-export function getLegacyOwnerId(database: Database.Database = db): string | null {
-  const row = database.prepare(`SELECT id FROM users ORDER BY is_admin DESC, created_at, rowid LIMIT 1`).get() as { id: string } | undefined;
-  return row?.id ?? null;
-}
-
 export default db;

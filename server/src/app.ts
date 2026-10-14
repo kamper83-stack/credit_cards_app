@@ -14,7 +14,7 @@ import db from './db.js';
 import { createAuthRouter } from './routes/auth.js';
 import { resolveAuthConfig, type AuthOptions } from './auth/config.js';
 import { csrfProtection } from './auth/csrf.js';
-import { sessionLoader } from './auth/middleware.js';
+import { sessionLoader, requireAuth } from './auth/middleware.js';
 import { warnInsecureCookieMode } from './auth/cookies.js';
 
 // TRUST_PROXY: which peers may set X-Forwarded-* (affects req.ip and thus rate limiting).
@@ -80,16 +80,18 @@ export function createApp(options: AppOptions = {}) {
     skip: (req) => req.path === '/health', // mounted at /api, so this is /api/health (Docker healthcheck)
   }));
 
-  // Attaches req.user when a valid session cookie is present. Existing routes are not yet
-  // protected with requireAuth (phase 4 scopes them per user).
+  // Attaches req.user when a valid session cookie is present (never rejects).
   app.use('/api', warnInsecureCookieMode(authConfig));
   app.use('/api', sessionLoader(db, authConfig));
   app.use('/api/auth', createAuthRouter(db, authConfig));
 
-  app.use('/api/cards', cardsRouter);
-  app.use('/api/goals', goalsRouter);
-  app.use('/api/transactions', transactionsRouter);
-  app.use('/api/riseup', riseupRouter);
+  // Every data route requires a session; handlers scope every query by req.user.id.
+  // Only /api/auth/* (which does its own checks) and /api/health are public. The route-inventory
+  // test in test/isolation.test.ts fails if a new /api route is added without requireAuth.
+  app.use('/api/cards', requireAuth, cardsRouter);
+  app.use('/api/goals', requireAuth, goalsRouter);
+  app.use('/api/transactions', requireAuth, transactionsRouter);
+  app.use('/api/riseup', requireAuth, riseupRouter);
 
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
