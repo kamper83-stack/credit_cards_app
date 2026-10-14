@@ -56,6 +56,7 @@ npm run build                    # לקוח ואז שרת
 # בדיקת עשן לשרת רץ (ראו DEPLOY.md סעיף 4.8). הבדיקות של ה-SPA דורשות build של הלקוח
 # (client/dist, אחרי npm run build) ושהשרת עצמו מגיש אותו, כלומר :3001 ולא שרת vite (:5173).
 # ההרשמה בהזמנה בלבד: בדיקות החשבון רצות רק עם SMOKE_INVITE=<טוקן הזמנה>; ליצירת הזמנה: npm run create-invite --workspace=server -- --days 7 --uses 1
+# ניהול הזמנות ומשתמשים גם בממשק: מנהל מחובר רואה "ניהול" בתפריט (/admin) ויוצר קישור הזמנה (מוצג פעם אחת).
 # באפשרות --no-register אין יצירת משתמש; בלי HTTPS המשתנה COOKIE_SECURE=false נדרש בשרת.
 scripts/smoke-test.sh http://localhost:3001
 ```

@@ -101,7 +101,7 @@ function InvitesSection() {
         <h2 id="invites-h" className="text-lg font-semibold text-white">הזמנות</h2>
       </div>
 
-      <form onSubmit={onCreate} noValidate className="grid grid-cols-1 sm:grid-cols-[1fr_8rem_8rem_auto] gap-3 items-end">
+      <form onSubmit={onCreate} noValidate className="grid grid-cols-1 sm:grid-cols-[1fr_10rem_10rem_auto] gap-3 items-end">
         <div className="space-y-1">
           <label htmlFor="inv-label" className="block text-sm text-slate-300">תווית (אופציונלי)</label>
           <input id="inv-label" className={inputClass} maxLength={100} value={label} onChange={e => setLabel(e.target.value)} />
