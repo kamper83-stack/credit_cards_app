@@ -10,6 +10,11 @@ import cardsRouter from './routes/cards.js';
 import goalsRouter from './routes/goals.js';
 import transactionsRouter from './routes/transactions.js';
 import riseupRouter from './routes/riseup.js';
+import db from './db.js';
+import { createAuthRouter } from './routes/auth.js';
+import { resolveAuthConfig, type AuthOptions } from './auth/config.js';
+import { csrfProtection } from './auth/csrf.js';
+import { sessionLoader } from './auth/middleware.js';
 
 // TRUST_PROXY: which peers may set X-Forwarded-* (affects req.ip and thus rate limiting).
 // Default 'loopback': only a proxy on the same host (nginx -> 127.0.0.1) is trusted, so a
@@ -24,7 +29,7 @@ function parseTrustProxy(value: string | undefined): boolean | number | string {
   return value;
 }
 
-export interface AppOptions {
+export interface AppOptions extends AuthOptions {
   trustProxy?: boolean | number | string;
   rateLimitMax?: number;
   rateLimitWindowMs?: number;
@@ -32,6 +37,7 @@ export interface AppOptions {
 
 export function createApp(options: AppOptions = {}) {
   const app = express();
+  const authConfig = resolveAuthConfig(options);
 
   app.set('trust proxy', options.trustProxy ?? parseTrustProxy(process.env.TRUST_PROXY));
 
@@ -61,6 +67,8 @@ export function createApp(options: AppOptions = {}) {
 
   // Same-origin is the target; enable CORS only when CLIENT_URL is explicitly set.
   if (process.env.CLIENT_URL) app.use(cors({ origin: process.env.CLIENT_URL }));
+  // CSRF check runs before body parsing so non-JSON bodies are refused unparsed.
+  app.use('/api', csrfProtection(authConfig));
   app.use(express.json({ limit: '100kb' }));
 
   app.use('/api', rateLimit({
@@ -70,6 +78,11 @@ export function createApp(options: AppOptions = {}) {
     legacyHeaders: false,
     skip: (req) => req.path === '/health', // mounted at /api, so this is /api/health (Docker healthcheck)
   }));
+
+  // Attaches req.user when a valid session cookie is present. Existing routes are not yet
+  // protected with requireAuth (phase 4 scopes them per user).
+  app.use('/api', sessionLoader(db, authConfig));
+  app.use('/api/auth', createAuthRouter(db, authConfig));
 
   app.use('/api/cards', cardsRouter);
   app.use('/api/goals', goalsRouter);

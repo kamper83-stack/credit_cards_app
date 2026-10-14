@@ -23,13 +23,13 @@ describe('API', () => {
   });
 
   it('POST /api/cards returns 409 when no owner user exists', async () => {
-    expect((await request(app).post('/api/cards').send({ name: 'x' })).status).toBe(409);
+    expect((await request(app).post('/api/cards').set('Sec-Fetch-Site', 'same-origin').send({ name: 'x' })).status).toBe(409);
     expect((db.prepare(`SELECT COUNT(*) n FROM cards`).get() as any).n).toBe(0);
   });
 
   it('creates and lists a card (DB-backed), owned by the legacy owner', async () => {
     db.prepare(`INSERT INTO users (id, email, password_hash, is_admin) VALUES ('owner', 'o@x.com', 'x', 1)`).run();
-    const created = await request(app).post('/api/cards').send({ name: 'Test card', last4: '1234' });
+    const created = await request(app).post('/api/cards').set('Sec-Fetch-Site', 'same-origin').send({ name: 'Test card', last4: '1234' });
     expect(created.status).toBe(201);
 
     const list = await request(app).get('/api/cards');
@@ -63,12 +63,12 @@ describe('API', () => {
   });
 
   it('rejects invalid card body', async () => {
-    const res = await request(app).post('/api/cards').send({});
+    const res = await request(app).post('/api/cards').set('Sec-Fetch-Site', 'same-origin').send({});
     expect(res.status).toBe(400);
   });
 
   it('PUT unknown card id returns 404', async () => {
-    const res = await request(app).put('/api/cards/does-not-exist').send({ name: 'x' });
+    const res = await request(app).put('/api/cards/does-not-exist').set('Sec-Fetch-Site', 'same-origin').send({ name: 'x' });
     expect(res.status).toBe(404);
   });
 });

@@ -81,6 +81,21 @@ openssl rand -base64 32     # הערך ל-TOKEN_ENC_KEY
 
 אם השרת אינו מצליח לפענח טוקן שמור (מפתח חסר/שגוי/גרסה לא מוכרת) הוא מסרב לעלות ומציין את הסיבה בלוג, בלי לשנות את המסד.
 
+## 3ב. אימות משתמשים (cookies, CSRF, איפוס סיסמה)
+
+- ה-session נשמר ב-cookie בשם `__Host-sid` (דגל `Secure`) כש-`COOKIE_SECURE=true` (ברירת המחדל כש-`NODE_ENV=production`), אחרת `sid` בלי `Secure`. **פריסה ב-HTTP פשוט (כתובת Tailscale בלי TLS) חייבת `COOKIE_SECURE=false`** - אחרת הדפדפן יזרוק את ה-cookie וההתחברות לא תחזיק. עם HTTPS השאירו `true`.
+- ה-nginx חייב להעביר `Host` מקורי (`proxy_set_header Host $host;`, כבר קיים בדוגמה) - בדיקת ה-CSRF משווה את `Origin` ל-`Host`. מקורות נוספים: `ALLOWED_ORIGINS` (רשימה מופרדת בפסיקים). בקשות לא-דפדפן (curl) חייבות לשלוח `Origin`.
+- `TRUST_PROXY` חייב להיות נכון כדי שה-rate limit לפי IP יעבוד (ראו סעיף nginx). מגבלות הכניסה/הרשמה: משתני `LOGIN_RATE_LIMIT_*` / `REGISTER_RATE_LIMIT_*` ב-`.env.example`.
+- איפוס סיסמה למשתמש (למנהל השרת בלבד; מבטל את כל ה-sessions ומנקה נעילה; הסיסמה נקראת בהקלדה נסתרת או מ-stdin, לא מ-argv/env):
+
+```bash
+cd /opt/rewards-app
+npm run build --workspace=server
+npm run reset-password --workspace=server -- user@example.com
+# Docker: docker compose exec <service> node server/dist/cli/reset-password.js user@example.com
+# (עם stdin: docker compose exec -T ... < קובץ-סיסמה, או -it להקלדה)
+```
+
 ## 4. הרצת השרת עם pm2
 
 ```bash
@@ -138,4 +153,4 @@ pm2 restart rewards-server
 
 - טוקן ה-RiseUp (PAT) פג תוקף אחרי 30 יום - תצטרכו להתחבר מחדש בעמוד ההגדרות מדי פעם.
 - מסד הנתונים (`server/data/rewards.db`) הוא קובץ SQLite מקומי על ה-VPS - גבו אותו אם חשוב לכם לשמר היסטוריה.
-- אם בעתיד תרצו לחשוף את זה גם מחוץ ל-Tailscale, **חובה** קודם להוסיף שכבת אימות (login/Basic Auth) - כרגע אין שום הגנה ברמת האפליקציה.
+- יש כעת חשבונות והתחברות (`/api/auth/*`), אך נתיבי הנתונים (cards/goals/...) עדיין לא מוגנים בהתחברות - זה שלב 4. עד אז **אל תחשפו** מחוץ ל-Tailscale.
