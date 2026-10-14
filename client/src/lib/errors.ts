@@ -67,3 +67,40 @@ export function validateNewPassword(password: string, email?: string): string | 
   if (email && pw.trim().toLowerCase() === email.trim().toLowerCase()) return 'הסיסמה לא יכולה להיות זהה לכתובת האימייל';
   return null;
 }
+
+/** Register errors: the generic auth mapping plus a friendly text for the (single, uniform) invalid-invite 400. */
+export function registerErrorMessage(e: unknown): string {
+  if (statusOf(e) === 400 && serverMessage(e) === INVALID_INVITE_MESSAGE) {
+    return 'ההזמנה אינה תקפה או שפג תוקפה. בקשו קישור הזמנה חדש ממנהל המערכת.';
+  }
+  return authErrorMessage(e);
+}
+export const INVALID_INVITE_MESSAGE = 'ההזמנה אינה תקפה';
+
+/**
+ * Extracts an invite token from what a user pasted: a full link (`https://host/register?invite=TOKEN`),
+ * a relative path, a bare query (`?invite=TOKEN`) or the raw token. Never throws; returns '' if nothing usable.
+ */
+export function parseInvite(input: string): string {
+  const v = input.trim();
+  if (!v || v.length > 2000) return '';
+  let candidate = v;
+  if (/[?&#/]|invite=/.test(v)) {
+    try {
+      const u = new URL(v, 'http://invite.invalid');
+      candidate = u.searchParams.get('invite') ?? new URLSearchParams(u.hash.replace(/^#/, '')).get('invite') ?? '';
+    } catch { return ''; }
+  }
+  return /^[A-Za-z0-9_-]{8,200}$/.test(candidate) ? candidate : '';
+}
+
+/** Admin API errors. 403 is a plain "no permission", never a logout; 409 covers self / last-admin guards. */
+export function adminErrorMessage(e: unknown, fallback = 'הפעולה נכשלה, נסו שוב'): string {
+  switch (statusOf(e)) {
+    case 403: return 'אין הרשאה';
+    case 409: return serverMessage(e) ?? 'לא ניתן לבצע את הפעולה (משתמש עצמי או מנהל אחרון)';
+    case 429: return 'יותר מדי ניסיונות, נסו שוב מאוחר יותר';
+    case undefined: return 'שגיאת תקשורת, נסו שוב';
+    default: return serverMessage(e) ?? fallback;
+  }
+}

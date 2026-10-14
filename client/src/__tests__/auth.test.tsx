@@ -102,7 +102,7 @@ describe('cache isolation', () => {
 describe('Register form validation', () => {
   it('shows Hebrew messages and sends nothing when invalid', async () => {
     const calls = mockApi(anonymous);
-    renderApp(<App />, '/register');
+    renderApp(<App />, '/register?invite=tok_abcdefgh12345');
     await screen.findByRole('heading', { name: 'יצירת חשבון' });
     fireEvent.click(screen.getByRole('button', { name: 'הרשמה' }));
     expect(await screen.findByText('יש להזין כתובת אימייל')).toBeTruthy();
@@ -128,7 +128,7 @@ describe('Register form validation', () => {
     mockApi((m, url) => (url === '/auth/register'
       ? { status, data: { error: 'כתובת האימייל כבר רשומה' } }
       : anonymous(m, url, {} as never)));
-    renderApp(<App />, '/register');
+    renderApp(<App />, '/register?invite=tok_abcdefgh12345');
     await screen.findByRole('heading', { name: 'יצירת חשבון' });
     type('אימייל', 'a@example.com');
     type(/^סיסמה/, 'a-long-enough-password');

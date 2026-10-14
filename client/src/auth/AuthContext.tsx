@@ -13,7 +13,7 @@ export interface AuthValue {
   status: AuthStatus;
   user: AuthUser | null;
   login: UseMutationResult<AuthUser, unknown, Credentials>;
-  register: UseMutationResult<AuthUser, unknown, Credentials>;
+  register: UseMutationResult<AuthUser, unknown, Credentials & { invite: string }>;
   logout: UseMutationResult<void, unknown, void>;
   /** True when the last server-side logout request failed (the session cookie may still be valid). */
   logoutFailed: boolean;

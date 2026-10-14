@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AuthUser, Card, Goal, Transaction, RiseupStatus, RiseupSyncResult } from '../types';
+import type { AdminInvite, AdminUser, AuthUser, CreatedInvite, Card, Goal, Transaction, RiseupStatus, RiseupSyncResult } from '../types';
 
 // Same-origin: the session is an HttpOnly cookie, so no withCredentials and no token handling here.
 export const api = axios.create({ baseURL: '/api' });
@@ -41,10 +41,20 @@ const enc = encodeURIComponent;
 export const authApi = {
   me: () => api.get<AuthUser>('/auth/me').then(r => r.data),
   login: (data: { email: string; password: string }) => api.post<AuthUser>('/auth/login', data).then(r => r.data),
-  register: (data: { email: string; password: string }) => api.post<AuthUser>('/auth/register', data).then(r => r.data),
+  register: (data: { email: string; password: string; invite: string }) => api.post<AuthUser>('/auth/register', data).then(r => r.data),
   logout: () => api.post<{ ok: boolean }>('/auth/logout').then(r => r.data),
   changePassword: (data: { currentPassword: string; newPassword: string }) =>
     api.post<{ ok: boolean }>('/auth/change-password', data).then(r => r.data),
+};
+
+export const adminApi = {
+  invites: () => api.get<AdminInvite[]>('/admin/invites').then(r => r.data),
+  createInvite: (data: { label?: string; expiresInDays: number; maxUses: number }) =>
+    api.post<CreatedInvite>('/admin/invites', data).then(r => r.data),
+  revokeInvite: (id: string) => api.post<{ ok: boolean }>(`/admin/invites/${enc(id)}/revoke`).then(r => r.data),
+  users: () => api.get<AdminUser[]>('/admin/users').then(r => r.data),
+  setUserDisabled: (id: string, disabled: boolean) =>
+    api.post<{ ok: boolean }>(`/admin/users/${enc(id)}/${disabled ? 'disable' : 'enable'}`).then(r => r.data),
 };
 
 export const cardsApi = {
