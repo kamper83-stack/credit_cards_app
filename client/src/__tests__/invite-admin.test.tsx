@@ -13,7 +13,12 @@ const type = (label: RegExp | string, value: string) => fireEvent.change(screen.
 
 function Probe() {
   const l = useLocation();
-  return <div data-testid="loc">{l.pathname + l.search}</div>;
+  return (
+    <>
+      <div data-testid="loc">{l.pathname + l.search}</div>
+      <div data-testid="hash">{l.hash}</div>
+    </>
+  );
 }
 const withProbe = (
   <>
@@ -37,6 +42,9 @@ describe('parseInvite', () => {
     expect(parseInvite(`  https://rewards.example.com/register?invite=${TOKEN}  `)).toBe(TOKEN);
     expect(parseInvite(`/register?invite=${TOKEN}&x=1`)).toBe(TOKEN);
     expect(parseInvite(`?invite=${TOKEN}`)).toBe(TOKEN);
+    expect(parseInvite(`https://rewards.example.com/register#invite=${TOKEN}`)).toBe(TOKEN);
+    expect(parseInvite(`/register#invite=${TOKEN}`)).toBe(TOKEN);
+    expect(parseInvite(`#invite=${TOKEN}`)).toBe(TOKEN);
     for (const bad of ['', '   ', 'short', 'https://x.com/register', 'a b c d e f g h i', '<script>alert(1)</script>', 'https://x.com/?invite=' + 'a'.repeat(300)]) {
       expect(parseInvite(bad)).toBe('');
     }
@@ -44,7 +52,27 @@ describe('parseInvite', () => {
 });
 
 describe('Register with an invite', () => {
-  it('sends the invite from ?invite=, strips it from the URL and never stores it', async () => {
+  it('reads the invite from the #invite= fragment, clears the hash and never stores it', async () => {
+    const bodies: unknown[] = [];
+    mockApi((m, url, cfg) => {
+      if (url === '/auth/register') { bodies.push(JSON.parse(String(cfg.data))); return { status: 201, data: { ...user, email: 'new@example.com' } }; }
+      return anonymous(m, url, cfg);
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    renderApp(withProbe, `/register#invite=${TOKEN}`);
+    await screen.findByRole('heading', { name: 'יצירת חשבון' });
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/register'));
+    expect(screen.getByTestId('hash').textContent).toBe('');
+    expect(screen.getByLabelText('אימות סיסמה')).toBeTruthy(); // invite accepted: full form, not the closed message
+    expect(document.body.innerHTML).not.toContain(TOKEN);
+    fillRegister();
+    await waitFor(() => expect(bodies).toEqual([{ email: 'new@example.com', password: 'a-long-enough-password', invite: TOKEN }]));
+    expect(setItem.mock.calls.flat().join('|')).not.toContain(TOKEN);
+    expect(JSON.stringify({ ...localStorage })).not.toContain(TOKEN);
+    expect(JSON.stringify({ ...sessionStorage })).not.toContain(TOKEN);
+  });
+
+  it('still accepts the legacy ?invite= link, strips it from the URL and never stores it', async () => {
     const bodies: unknown[] = [];
     mockApi((m, url, cfg) => {
       if (url === '/auth/register') { bodies.push(JSON.parse(String(cfg.data))); return { status: 201, data: { ...user, email: 'new@example.com' } }; }
@@ -160,7 +188,7 @@ describe('admin page', () => {
       if (o) return o;
       if (url === '/auth/me') return { status: 200, data: admin };
       if (url === '/admin/invites' && m === 'GET') return { status: 200, data: invites };
-      if (url === '/admin/invites' && m === 'POST') return { status: 201, data: { id: 'i3', token: TOKEN, path: `/register?invite=${TOKEN}`, label: 'חבר', maxUses: 2, expiresAt: now + 86400 * 7 } };
+      if (url === '/admin/invites' && m === 'POST') return { status: 201, data: { id: 'i3', token: TOKEN, path: `/register#invite=${TOKEN}`, label: 'חבר', maxUses: 2, expiresAt: now + 86400 * 7 } };
       if (url === '/admin/users' && m === 'GET') return { status: 200, data: users };
       if (url.startsWith('/admin/')) return { status: 200, data: { ok: true } };
       if (url === '/riseup/status') return { status: 200, data: { connected: false, tokenPreview: null, lastSyncedAt: null } };
@@ -192,7 +220,7 @@ describe('admin page', () => {
 
     const box = await screen.findByRole('region', { name: 'קישור הזמנה חדש' });
     expect(bodies['POST /admin/invites']).toEqual({ label: 'חבר', expiresInDays: 14, maxUses: 2 });
-    const expected = `${window.location.origin}/register?invite=${TOKEN}`;
+    const expected = `${window.location.origin}/register#invite=${TOKEN}`;
     expect((within(box).getByLabelText('קישור הזמנה') as HTMLInputElement).value).toBe(expected);
     expect(within(box).getByText(/מוצג פעם אחת/)).toBeTruthy();
 

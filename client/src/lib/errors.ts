@@ -78,7 +78,7 @@ export function registerErrorMessage(e: unknown): string {
 export const INVALID_INVITE_MESSAGE = 'ההזמנה אינה תקפה';
 
 /**
- * Extracts an invite token from what a user pasted: a full link (`https://host/register?invite=TOKEN`),
+ * Extracts an invite token from what a user pasted: a full link (`https://host/register#invite=TOKEN`, or the legacy `?invite=TOKEN`),
  * a relative path, a bare query (`?invite=TOKEN`) or the raw token. Never throws; returns '' if nothing usable.
  */
 export function parseInvite(input: string): string {

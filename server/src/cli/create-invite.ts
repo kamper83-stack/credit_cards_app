@@ -1,41 +1,29 @@
 import 'dotenv/config';
 import db from '../db.js';
-import { createInvite } from '../auth/invites.js';
+import { parseCliArgs, intFlag, usageExit, UsageError } from './args.js';
+import { cliCreateInvite, CliError } from './actions.js';
 
 /**
- * Admin CLI: npm run create-invite --workspace=server -- [--days 7] [--uses 1] [--label text]
- * Needs at least one admin user. Prints the invite link path once; only its hash is stored.
+ * Admin CLI: npm run create-invite --workspace=server -- [--days 7] [--uses 1] [--label text] [--as admin@email]
+ * Needs at least one enabled admin. The admin_audit actor is the admin given by --as, else the oldest enabled admin.
+ * Prints the invite link path once; only its hash is stored. Unknown flags / missing values exit with code 2.
  */
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+const USAGE = 'create-invite [--days 1-90] [--uses 1-100] [--label text] [--as admin@email]';
+
+let opts: { days: number; uses: number; label?: string; as?: string };
+try {
+  const { flags } = parseCliArgs(process.argv.slice(2), { days: 'int', uses: 'int', label: 'string', as: 'string' });
+  opts = { days: intFlag(flags, 'days', 7, 1, 90), uses: intFlag(flags, 'uses', 1, 1, 100), label: flags.label, as: flags.as };
+} catch (e) {
+  if (e instanceof UsageError) usageExit(e, USAGE);
+  throw e;
 }
 
-function intArg(name: string, def: number, min: number, max: number): number {
-  const raw = arg(name);
-  if (raw === undefined) return def;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min || n > max) {
-    console.error(`--${name} must be an integer between ${min} and ${max}.`);
-    process.exit(2);
-  }
-  return n;
+try {
+  const inv = cliCreateInvite(db, { ...opts, nowSec: Math.floor(Date.now() / 1000) });
+  console.log(`Invite created (valid ${opts.days} day(s), ${opts.uses} use(s)). Shown once; append to your site origin:`);
+  console.log(inv.path);
+} catch (e) {
+  if (e instanceof CliError) { console.error(e.message); process.exit(1); }
+  throw e;
 }
-
-const days = intArg('days', 7, 1, 90);
-const uses = intArg('uses', 1, 1, 100);
-const label = arg('label');
-
-const admin = db.prepare(`SELECT id FROM users WHERE is_admin = 1 AND disabled_at IS NULL ORDER BY created_at, rowid LIMIT 1`).get() as { id: string } | undefined;
-if (!admin) {
-  console.error('No enabled admin user exists; cannot create an invite.');
-  process.exit(1);
-}
-const now = Math.floor(Date.now() / 1000);
-const inv = db.transaction(() => {
-  const created = createInvite(db, { label, expiresInDays: days, maxUses: uses, createdBy: admin.id, nowSec: now });
-  db.prepare(`INSERT INTO admin_audit (actor_user_id, action, target, at) VALUES (?, 'invite.create_cli', ?, ?)`).run(admin.id, created.id, now);
-  return created;
-})();
-console.log(`Invite created (valid ${days} day(s), ${uses} use(s)). Shown once; append to your site origin:`);
-console.log(inv.path);

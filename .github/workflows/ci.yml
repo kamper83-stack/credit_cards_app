@@ -71,7 +71,8 @@ jobs:
             curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1 && break
             sleep 1
           done
-          # The CLI prints "/register?invite=<token>" as its last line; keep only the token.
+          # The CLI prints "/register#invite=<token>" as its last line; keep only the token.
+          # (The CLI parses argv strictly: unknown flags / flags without a value exit 2, so keep flags exact.)
           SMOKE_INVITE="$(docker exec app node server/dist/cli/create-invite.js --uses 1 --label ci-smoke | tail -n 1 | sed 's/.*invite=//')"
           test -n "$SMOKE_INVITE"
           export SMOKE_INVITE

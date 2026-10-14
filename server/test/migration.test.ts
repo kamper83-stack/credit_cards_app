@@ -394,3 +394,50 @@ describe('password', () => {
     expect(await verifyPassword('not-a-hash', 'x')).toBe(false);
   });
 });
+
+describe('fresh install without an admin (registration is invite-only)', () => {
+  it('fails fast in production with a clear message and writes nothing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-fresh-'));
+    const db = openDatabase(path.join(dir, 'rewards.db'));
+    await expect(runStartupMigrations(db, { NODE_ENV: 'production' })).rejects.toThrow(/ADMIN_EMAIL.*ADMIN_PASSWORD/s);
+    expect(db.prepare(`SELECT COUNT(*) n FROM users`).get()).toEqual({ n: 0 });
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('only warns outside production', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-fresh-'));
+    const db = openDatabase(path.join(dir, 'rewards.db'));
+    await runStartupMigrations(db, { NODE_ENV: 'development' });
+    await runStartupMigrations(db, {});
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/ADMIN_EMAIL/);
+    db.close();
+    warn.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('production with ADMIN_* creates the admin; with existing users ADMIN_* is not required', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-fresh-'));
+    const db = openDatabase(path.join(dir, 'rewards.db'));
+    const env = { NODE_ENV: 'production', ADMIN_EMAIL: 'boss@example.com', ADMIN_PASSWORD: 'a-long-enough-admin-pw' };
+    await runStartupMigrations(db, env);
+    expect(db.prepare(`SELECT email, is_admin FROM users`).all()).toEqual([{ email: 'boss@example.com', is_admin: 1 }]);
+    await runStartupMigrations(db, { NODE_ENV: 'production' }); // users exist: ADMIN_* ignored/not needed
+    expect(db.prepare(`SELECT COUNT(*) n FROM users`).get()).toEqual({ n: 1 });
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('warns when users exist but none is an enabled admin', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-fresh-'));
+    const db = openDatabase(path.join(dir, 'rewards.db'));
+    db.prepare(`INSERT INTO users (id, email, password_hash, is_admin) VALUES ('u1', 'u@example.com', 'x', 0)`).run();
+    await runStartupMigrations(db, { NODE_ENV: 'production' });
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/promote-admin/);
+    db.close();
+    warn.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

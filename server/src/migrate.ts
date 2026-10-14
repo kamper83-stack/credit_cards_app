@@ -202,7 +202,17 @@ export function preflight(file: string, env: Env): void {
 export async function runStartupMigrations(db: Database.Database, env: Env = process.env): Promise<void> {
   const state = inspectState(db);
   const legacyData = state.hasPlaintextPat || state.hasOwnerlessData;
-  if (state.userCount === 0 && !legacyData && !hasAdminEnv(env)) return; // fresh install, nothing to do
+  if (state.userCount === 0 && !legacyData && !hasAdminEnv(env)) {
+    // Fresh install with registration closed: nobody could ever sign in or create an invite.
+    const msg = 'No users exist and ADMIN_EMAIL / ADMIN_PASSWORD (or ADMIN_PASSWORD_FILE) are not set. ' +
+      'Registration is invite-only, so the first admin account must be created from these variables on first start.';
+    if (env.NODE_ENV === 'production') throw new MigrationError(`${msg} Set them and start again.`);
+    console.warn(`WARNING: ${msg} Nobody will be able to log in until you set them (dev/test: continuing anyway).`);
+    return;
+  }
+  if (state.userCount > 0 && countRows(db, 'users', 'is_admin = 1 AND disabled_at IS NULL') === 0) {
+    console.warn('WARNING: users exist but none is an enabled admin. Run the promote-admin CLI (see deploy/DEPLOY.md 5.4.1).');
+  }
 
   // Validate everything up front so we refuse to start before touching any data.
   checkRequirements(db, state, env);

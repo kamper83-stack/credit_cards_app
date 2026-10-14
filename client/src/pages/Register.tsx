@@ -5,21 +5,27 @@ import { AuthCard, FormAlert, PasswordField, SubmitButton, TextField } from '../
 import { INVALID_INVITE_MESSAGE, parseInvite, serverMessage, statusOf, registerErrorMessage, validateEmail, validateNewPassword } from '../lib/errors';
 import { safeRedirectPath } from '../lib/safeRedirect';
 
+const hasInviteParam = (params: string) => new URLSearchParams(params).has('invite');
+const inviteFromLocation = (search: string, hash: string) =>
+  parseInvite(new URLSearchParams(hash.replace(/^#/, '')).get('invite') ?? new URLSearchParams(search).get('invite') ?? '');
+
 export function Register() {
   const { register } = useAuth();
   const submitting = useRef(false);
   const navigate = useNavigate();
   const location = useLocation();
-  // The invite lives in component memory only (never storage). It is read once from ?invite= and the
-  // query string is removed from the address bar/history right away so the secret does not linger.
-  const [invite, setInvite] = useState(() => parseInvite(new URLSearchParams(location.search).get('invite') ?? ''));
+  // The invite lives in component memory only (never storage). Links carry it in the URL fragment
+  // (/register#invite=TOKEN), which browsers never send to the server (so it stays out of access logs).
+  // The legacy ?invite= query form is still accepted. Either way it is read once and removed from the
+  // address bar right away (navigate with replace = history.replaceState) so the secret does not linger.
+  const [invite, setInvite] = useState(() => inviteFromLocation(location.search, location.hash));
   const [pasted, setPasted] = useState('');
   const [pasteError, setPasteError] = useState<string | null>(null);
   useEffect(() => {
-    if (new URLSearchParams(location.search).has('invite')) {
+    if (hasInviteParam(location.search) || hasInviteParam(location.hash.replace(/^#/, ''))) {
       navigate({ pathname: location.pathname, search: '', hash: '' }, { replace: true, state: location.state });
     }
-  }, [location.search, location.pathname, location.state, navigate]);
+  }, [location.search, location.hash, location.pathname, location.state, navigate]);
 
   const onUseInvite = (e: FormEvent) => {
     e.preventDefault();

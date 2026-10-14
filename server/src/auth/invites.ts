@@ -17,7 +17,10 @@ export interface CreatedInvite {
   id: string;
   /** Raw token: returned once to the creator, never stored (only its SHA-256 is). */
   token: string;
-  /** Path the client appends to window.location.origin. */
+  /**
+   * Path the client appends to window.location.origin. The token is in the URL FRAGMENT, which
+   * browsers never send to the server, so it stays out of nginx/proxy access logs and Referer.
+   */
   path: string;
   label: string | null;
   maxUses: number;
@@ -33,7 +36,7 @@ export function createInvite(db: Database.Database, o: CreateInviteOptions): Cre
   const expiresAt = o.nowSec + Math.round(days * 86400);
   db.prepare(`INSERT INTO invites (id, token_hash, label, max_uses, used_count, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?)`)
     .run(id, hashToken(token), label, maxUses, expiresAt, o.createdBy, o.nowSec);
-  return { id, token, path: `/register?invite=${token}`, label, maxUses, expiresAt };
+  return { id, token, path: `/register#invite=${token}`, label, maxUses, expiresAt };
 }
 
 /**

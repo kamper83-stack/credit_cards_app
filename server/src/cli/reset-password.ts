@@ -4,6 +4,7 @@ import db from '../db.js';
 import { hashPassword } from '../password.js';
 import { checkPassword } from '../auth/passwordPolicy.js';
 import { revokeAllSessions } from '../auth/sessions.js';
+import { parseCliArgs, usageExit, UsageError } from './args.js';
 
 /**
  * Admin CLI: npm run reset-password --workspace=server -- <email>
@@ -52,16 +53,22 @@ process.on('exit', () => { try { if (process.stdin.isTTY) process.stdin.setRawMo
 process.on('SIGINT', () => { process.stderr.write('\nCancelled.\n'); process.exit(130); });
 
 async function main() {
-  const email = process.argv[2]?.trim().toLowerCase();
-  if (!email) {
-    console.error('Usage: npm run reset-password --workspace=server -- <email>');
-    process.exit(2);
+  const USAGE = 'reset-password <email>';
+  let email: string;
+  try {
+    const { positionals } = parseCliArgs(process.argv.slice(2), {}, 1);
+    if (!positionals[0]?.trim()) throw new UsageError('Missing <email>.');
+    email = positionals[0].trim().toLowerCase();
+  } catch (e) {
+    if (e instanceof UsageError) usageExit(e, USAGE);
+    throw e;
   }
-  const user = db.prepare(`SELECT id FROM users WHERE email = ?`).get(email) as { id: string } | undefined;
+  const user = db.prepare(`SELECT id, disabled_at FROM users WHERE email = ?`).get(email) as { id: string; disabled_at: number | null } | undefined;
   if (!user) {
     console.error('No user with that email.');
     process.exit(1);
   }
+  if (user.disabled_at) console.error('Warning: this user is DISABLED. Resetting the password does not re-enable the account (they still cannot log in).');
   const password = await readHidden('New password: ');
   if (process.stdin.isTTY) {
     const again = await readHidden('Repeat password: ');

@@ -144,7 +144,7 @@ describe('invite-gated registration', () => {
       expect(created.status).toBe(201);
       const token = created.body.token as string;
       expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-      expect(created.body.path).toBe(`/register?invite=${token}`);
+      expect(created.body.path).toBe(`/register#invite=${token}`); // fragment: never sent to the server/proxy logs
       await reg(app, token);
       await reg(app, 'wrong-' + token);
       const dump = JSON.stringify(db.prepare(`SELECT * FROM invites`).all()) + JSON.stringify(db.prepare(`SELECT * FROM users`).all())

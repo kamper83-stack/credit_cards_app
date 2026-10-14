@@ -20,11 +20,11 @@
                                                               '-- תהליך משנה: @riseup-oss/mcp (stdio) עם הטוקן של המשתמש
 ```
 
-- **אימות:** הרשמה פתוחה, סיסמאות ב-argon2id (10-128 תווים, נורמליזציית NFC). ה-session הוא cookie אטום (`HttpOnly`, `SameSite=Lax`, `Path=/`, בלי `Domain`); ב-DB נשמר רק ה-SHA-256 שלו. פג אחרי 7 ימי חוסר פעילות או 30 יום מוחלטים; כניסה/הרשמה/שינוי סיסמה מחליפים את ה-token, ושינוי סיסמה מבטל את כל ה-sessions. עם `COOKIE_SECURE=true` (ברירת המחדל ב-production) השם הוא `__Host-sid` ויש דגל `Secure`.
+- **אימות:** הרשמה בהזמנה בלבד (סעיף 5.4.1; משתמש מנהל ראשון נוצר מ-`ADMIN_*` בהפעלה הראשונה), סיסמאות ב-argon2id (10-128 תווים, נורמליזציית NFC). ה-session הוא cookie אטום (`HttpOnly`, `SameSite=Lax`, `Path=/`, בלי `Domain`); ב-DB נשמר רק ה-SHA-256 שלו. פג אחרי 7 ימי חוסר פעילות או 30 יום מוחלטים; כניסה/הרשמה/שינוי סיסמה מחליפים את ה-token, ושינוי סיסמה מבטל את כל ה-sessions. עם `COOKIE_SECURE=true` (ברירת המחדל ב-production) השם הוא `__Host-sid` ויש דגל `Secure`.
 - **בידוד נתונים:** כל נתיב תחת `/api` דורש התחברות (חוץ מ-`register`, `login`, `logout`, `health`), וכל שאילתה מסוננת לפי המשתמש. משאב של משתמש אחר מחזיר 404 זהה למשאב שלא קיים.
 - **CSRF:** לכל בקשה שאינה GET/HEAD/OPTIONS חייב להיות `Origin` (או `Referer`) התואם ל-`Host` של הבקשה (או ל-`ALLOWED_ORIGINS`), וגוף הבקשה חייב להיות `application/json`. לכן nginx חייב להעביר את ה-`Host` המקורי, ו-curl חייב לשלוח `Origin`.
 - **הצפנה:** טוקן ה-RiseUp של כל משתמש מוצפן ב-AES-256-GCM (מפתח `TOKEN_ENC_KEY`, ה-id של המשתמש כ-AAD) ולא חוזר ללקוח (רק תצוגה מוסתרת). `ADMIN_*` ו-`TOKEN_ENC_KEY` לא מועברים לתהליך ה-MCP.
-- **הגבלות קצב:** כניסה לפי IP (20), לפי אימייל+IP (10) ולפי אימייל (100) ב-15 דקות; הרשמה 10 לשעה ל-IP; `/api` כללי 300 ב-15 דקות (`/api/health` פטור); RiseUp: 5 פעולות ל-15 דקות למשתמש, סנכרון אחד בו-זמנית למשתמש ו-`RISEUP_MAX_CONCURRENT` (3) בשרת. נעילת חשבון ל-60 שניות אחרי 5 כשלונות רצופים. הגבלות לפי IP תלויות ב-`TRUST_PROXY` נכון (סעיף 4.5).
+- **הגבלות קצב:** כניסה לפי IP (20), לפי אימייל+IP (10) ולפי אימייל (100) ב-15 דקות; הרשמה 10 לשעה ל-IP (`REGISTER_RATE_LIMIT_*`); ניסיונות הזמנה שגויה (לא קיימת/פגה/בוטלה/מוצתה) 10 לשעה ל-IP (`INVITE_FAIL_RATE_LIMIT_MAX`, `INVITE_FAIL_RATE_LIMIT_WINDOW_MS`; ראו הערה על IP משותף בסעיף 5.4.1); `/api` כללי 300 ב-15 דקות (`/api/health` פטור); RiseUp: 5 פעולות ל-15 דקות למשתמש, סנכרון אחד בו-זמנית למשתמש ו-`RISEUP_MAX_CONCURRENT` (3) בשרת. נעילת חשבון ל-60 שניות אחרי 5 כשלונות רצופים. הגבלות לפי IP תלויות ב-`TRUST_PROXY` נכון (סעיף 4.5).
 - **כותרות:** CSP קפדני, `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, HSTS ב-production, ו-`Cache-Control: no-store` על כל תשובת `/api`. מגיעות מהאפליקציה עצמה (helmet), כך שב-Docker nginx לא צריך להוסיף אותן.
 - **`@riseup-oss/mcp` הוא גבול האמון:** השרת מפעיל אותו עם `node` על הגרסה שננעלה ב-`package-lock.json` (בלי `npx` ובלי הורדה בזמן ריצה) ומעביר לו את הטוקן. הוא רץ תחת אותו משתמש מערכת כמו השרת, ולכן זה לא בידוד מלא. מעדכנים אותו רק דרך ה-lockfile ובנייה מחדש.
 - **קובץ המסד:** SQLite בהרשאות 600 (בבעלות uid 1000 בקונטיינר, ולכן פקודות `sqlite3` על `data/` במארח דורשות `sudo`). הגנה על הקובץ + המפתח (בנפרד) היא הגנת הטוקנים: מי שמחזיק את שניהם קורא את הטוקנים.
@@ -51,10 +51,12 @@ docker compose build && docker compose up -d
 docker compose logs --tail=20 app               # צפוי: "Server running on http://0.0.0.0:3000"
 ```
 
-תוכן `.env` להתקנה חדשה (מסד נקי לא צריך `ADMIN_*`; המשתמש הראשון נרשם דרך האפליקציה):
+תוכן `.env` להתקנה חדשה. **מסד נקי דורש `ADMIN_EMAIL`/`ADMIN_PASSWORD` בהפעלה הראשונה**: ההרשמה בהזמנה בלבד, ולכן זה החשבון (מנהל) שממנו יוצרים את ההזמנות. בלעדיהם, ב-production (`NODE_ENV=production`, כמו ב-Docker) השרת יוצא מיד עם `Startup aborted: No users exist and ADMIN_EMAIL ...`; בפיתוח/בדיקות הוא עולה עם אזהרה בולטת בלוג. ברגע שקיים משתמש כלשהו `ADMIN_*` מתעלמים ממנו (ואפשר למחוק את `ADMIN_PASSWORD`, סעיף 4.9):
 
 ```
 TOKEN_ENC_KEY=<הפלט של openssl>
+ADMIN_EMAIL=<האימייל שלכם>
+ADMIN_PASSWORD='<לפחות 12 תווים>'
 ```
 
 בלי `TOKEN_ENC_KEY` השרת עולה, אבל שמירת טוקן RiseUp תיכשל (500). ללא TLS (גישה ב-HTTP בלבד, רק לבדיקה מקומית) הוסיפו `COOKIE_SECURE=false`.
@@ -188,7 +190,7 @@ scripts/smoke-test.sh https://rewards.erankam.dev --no-register   # בדיקות
 
 1. היכנסו עם `ADMIN_EMAIL`/`ADMIN_PASSWORD`. הכרטיסים, העסקאות והיעדים הישנים מופיעים (השוו למספרים מסעיף 4.1).
 2. הגדרות: סטטוס RiseUp מחובר (תצוגה מוסתרת של הטוקן), "סנכרן עכשיו" עובד.
-3. הרשמה והתחברות עם משתמש בדיקה שני (או `scripts/smoke-test.sh https://rewards.erankam.dev` המלא, שיוצר משתמש זמני `smoke-<hex>@example.com`): המשתמש החדש רואה רשימות ריקות ולא את נתוני המנהל.
+3. הרשמה והתחברות עם משתמש בדיקה שני בעזרת הזמנה (סעיף 5.4.1), או `SMOKE_INVITE=<טוקן הזמנה חד-פעמי> scripts/smoke-test.sh https://rewards.erankam.dev` (יוצר משתמש זמני `smoke-<hex>@example.com`; בלי `SMOKE_INVITE` בדיקות החשבון מדולגות): המשתמש החדש רואה רשימות ריקות ולא את נתוני המנהל.
 4. בדיקת cookie: בכלי המפתחים, `__Host-sid` עם `HttpOnly`, `Secure`, `SameSite=Lax`.
 
 אם ההתחברות "מצליחה" אבל נזרקים בחזרה למסך הכניסה: ה-cookie לא נשמר. סיבה נפוצה: `COOKIE_SECURE=true` בגישה ב-HTTP פשוט (הדפדפן זורק cookie עם `Secure`). אזהרה בלוג על `X-Forwarded-Proto` חסר מצביעה על הגדרת nginx שגויה, אך כשלעצמה אינה גורמת לאובדן ה-cookie בגישת HTTPS.
@@ -196,11 +198,12 @@ scripts/smoke-test.sh https://rewards.erankam.dev --no-register   # בדיקות
 ### 4.8 בדיקת עשן
 
 ```bash
-scripts/smoke-test.sh https://rewards.erankam.dev              # מלא: יוצר משתמש בדיקה
+SMOKE_INVITE=<טוקן הזמנה חד-פעמי> scripts/smoke-test.sh https://rewards.erankam.dev   # מלא: יוצר משתמש בדיקה
+scripts/smoke-test.sh https://rewards.erankam.dev              # בלי SMOKE_INVITE: בדיקות החשבון מדולגות (רק אנונימיות)
 scripts/smoke-test.sh https://rewards.erankam.dev --no-register   # רק בדיקות אנונימיות
 ```
 
-הסקריפט בודק: health, 401 לבקשה אנונימית, כותרות אבטחה (CSP, nosniff, `no-store` על `/api`), הגשת ה-SPA, דחיית POST חוצה-מקור (403), ובמצב המלא גם הרשמה, כניסה, `me`, יציאה, דגלי ה-cookie (`HttpOnly`, `Secure` ב-https, `SameSite`), וביטול ה-session בצד השרת (הצגה חוזרת של ה-token הישן מחזירה 401). קוד יציאה 0 = הכול עבר. משתמש הבדיקה **אינו נמחק** (אין מחיקת חשבון באפליקציה); למחיקה ידנית (כשהקונטיינר עצור או דרך הקוד בסעיף 5.2):
+הסקריפט בודק: health, 401 לבקשה אנונימית, כותרות אבטחה (CSP, nosniff, `no-store` על `/api`), הגשת ה-SPA, דחיית POST חוצה-מקור (403), **בלי `SMOKE_INVITE` בדיקות החשבון מדולגות במפורש** (ההרשמה בהזמנה בלבד; הסקריפט מדפיס על כך הערה), וה-0 אומר רק שהבדיקות האנונימיות עברו. את הטוקן מפיקים עם `create-invite` (סעיף 5.4.1; ה-CLI מדפיס `/register#invite=<token>`, מעבירים לסקריפט רק את ה-`<token>`). במצב המלא (עם `SMOKE_INVITE`) נבדקים גם הרשמה, כניסה, `me`, יציאה, דגלי ה-cookie (`HttpOnly`, `Secure` ב-https, `SameSite`), וביטול ה-session בצד השרת (הצגה חוזרת של ה-token הישן מחזירה 401). קוד יציאה 0 = הכול עבר. משתמש הבדיקה **אינו נמחק** (אין מחיקת חשבון באפליקציה); למחיקה ידנית (כשהקונטיינר עצור או דרך הקוד בסעיף 5.2):
 
 ```bash
 sudo sqlite3 data/rewards.db "PRAGMA foreign_keys=ON; DELETE FROM users WHERE email LIKE 'smoke-%@example.com'"
@@ -310,18 +313,36 @@ docker compose exec app node server/dist/cli/reset-password.js user@example.com 
 printf '%s\n' 'הסיסמה-החדשה' | docker compose exec -T app node server/dist/cli/reset-password.js user@example.com   # מ-stdin (יופיע בהיסטוריה; עדיף הקלדה)
 ```
 
-ה-CLI משתמש במשתני הסביבה של הקונטיינר (נדרש `TOKEN_ENC_KEY` כשיש טוקנים שמורים). ללא Docker: `npm run build --workspace=server && npm run reset-password --workspace=server -- user@example.com` (ב-`server/` עם `.env`).
+ה-CLI משתמש במשתני הסביבה של הקונטיינר (נדרש `TOKEN_ENC_KEY` כשיש טוקנים שמורים). הוא מקבל בדיוק אימייל אחד (דגל לא מוכר או ארגומנט נוסף = שגיאה וקוד יציאה 2). **איפוס סיסמה אינו מפעיל מחדש משתמש מושבת** (`disabled_at`): ה-CLI מדפיס אזהרה כשהיעד מושבת, והוא עדיין לא יוכל להיכנס עד `enable` (`POST /api/admin/users/:id/enable` על ידי מנהל). ללא Docker: `npm run build --workspace=server && npm run reset-password --workspace=server -- user@example.com` (ב-`server/` עם `.env`).
 
-### 5.4.1 הזמנות (הרשמה בהזמנה בלבד)
+### 5.4.1 הזמנות והמנהל הראשון (הרשמה בהזמנה בלבד)
 
-ההרשמה סגורה בלי הזמנה: `POST /api/auth/register` דורש טוקן הזמנה תקף (תפוגה 1-90 ימים, 1-100 שימושים, ניתן לביטול). משתמשים קיימים לא מושפעים. אחרי השדרוג יוצרים את ההזמנה הראשונה מה-CLI (דורש מנהל קיים; הקישור מודפס פעם אחת ורק ה-hash נשמר), ואחר כך אפשר דרך ה-API של המנהל (`/api/admin/invites`):
+ההרשמה סגורה בלי הזמנה: `POST /api/auth/register` דורש טוקן הזמנה תקף (תפוגה 1-90 ימים, 1-100 שימושים, ניתן לביטול). משתמשים קיימים לא מושפעים.
+
+**אין הזמנות בלי מנהל.** בהתקנה חדשה המנהל הראשון נוצר מ-`ADMIN_EMAIL`/`ADMIN_PASSWORD` בהפעלה הראשונה (סעיף 3; בלעדיהם השרת ב-production לא עולה). אם יש משתמשים אבל אין מנהל פעיל (למשל מסד שהועתק, או המנהל הושבת), השרת עולה עם אזהרה בלוג; בדקו ואז קדמו משתמש קיים:
 
 ```bash
-docker compose exec app node server/dist/cli/create-invite.js --days 7 --uses 1 --label "שם"
-# מדפיס: /register?invite=<token>  -> מצרפים לכתובת האתר: https://rewards.erankam.dev/register?invite=<token>
+sudo sqlite3 data/rewards.db "SELECT email FROM users WHERE is_admin=1 AND disabled_at IS NULL"   # ריק = אין מנהל פעיל
+docker compose exec app node server/dist/cli/promote-admin.js user@example.com [--as admin@example.com]
+# ללא Docker: npm run build --workspace=server && npm run promote-admin --workspace=server -- user@example.com
 ```
 
-ללא Docker: `npm run build --workspace=server && npm run create-invite --workspace=server -- --days 7 --uses 1`. השבתת משתמש (`POST /api/admin/users/:id/disable`) מנתקת אותו מיד וחוסמת כניסה; `enable` מחזיר. פעולות הזמנה/השבתה נרשמות בטבלה `admin_audit`. בדיקת העשן יוצרת משתמש רק כש-`SMOKE_INVITE=<טוקן חד-פעמי>` מוגדר; אחרת היא מדלגת על בדיקות החשבון.
+`promote-admin` מקדם משתמש קיים **ופעיל** (משתמש לא קיים או מושבת = שגיאה, קוד יציאה 1, ללא שינוי) ורושם שורה ב-`admin_audit` (`user.promote_cli`). הפועל בשורת הביקורת הוא המנהל שנתון ב-`--as <email>`, אחרת המנהל הפעיל הוותיק ביותר, ואם אין אף אחד, המשתמש המקודם עצמו. אם המשתמש מושבת, הפעילו אותו קודם ידנית: `sudo sqlite3 data/rewards.db "UPDATE users SET disabled_at=NULL, failed_attempts=0, locked_until=NULL WHERE email='user@example.com'"` (הקונטיינר עצור, ואז `chown -R 1000:1000 data`).
+
+עכשיו יוצרים את ההזמנה הראשונה מה-CLI (הקישור מודפס פעם אחת ורק ה-hash נשמר), ואחר כך אפשר דרך ממשק הניהול או ה-API של המנהל (`/api/admin/invites`):
+
+```bash
+docker compose exec app node server/dist/cli/create-invite.js --days 7 --uses 1 --label "שם" [--as admin@example.com]
+# מדפיס: /register#invite=<token>  -> מצרפים לכתובת האתר: https://rewards.erankam.dev/register#invite=<token>
+```
+
+ה-CLI קפדני: דגל לא מוכר (`--use`), דגל בלי ערך (`--label --days 3`), ערך מחוץ לטווח או ארגומנט מיותר מדפיסים שגיאה עם שורת Usage ויוצאים בקוד 2 בלי לשנות כלום. שורת `admin_audit` של `create-invite` (`invite.create_cli`) נרשמת על שם המנהל מ-`--as <email>` או, כברירת מחדל, המנהל הפעיל הוותיק ביותר. ללא Docker: `npm run build --workspace=server && npm run create-invite --workspace=server -- --days 7 --uses 1`.
+
+**הטוקן בפרגמנט ולא ב-query.** הקישור הוא `/register#invite=<token>`: דפדפנים לא שולחים את ה-fragment לשרת, ולכן הטוקן לא מופיע ב-access log של nginx (ולא ב-`Referer`; השרת שולח `Referrer-Policy: no-referrer`). האפליקציה קוראת אותו וממחקת אותו מהכתובת מיד (`replaceState`). קישורים ישנים בצורת `?invite=<token>` עדיין עובדים, אבל הם כן נרשמים ב-access log, ולכן עדיף ליצור קישור חדש. מגבלה: היסטוריית הדפדפן וסנכרון ההיסטוריה בין מכשירים שומרים את הכתובת המקורית (כולל ה-fragment), והטוקן נשאר בערוץ שבו שלחתם אותו (הודעה וכד'). לכן תנו להזמנות תוקף קצר (`--days 1-2`) ושימוש יחיד (`--uses 1`), וביטלו הזמנה שנחשפה (ממשק הניהול או `POST /api/admin/invites/:id/revoke`).
+
+**הגבלת ניסיונות הזמנה שגויה.** כל הזמנה לא תקפה נספרת נגד מגבילה לפי IP (`INVITE_FAIL_RATE_LIMIT_MAX`, ברירת מחדל 10, ב-`INVITE_FAIL_RATE_LIMIT_WINDOW_MS`, ברירת מחדל שעה). משתמשים מאחורי אותו IP (משרד, NAT, VPN) חולקים את המכסה, ולכן כמה כשלונות של אחד עלולים לחסום מוזמן תקף (429) עד שהחלון נגמר. אם זה קורה, הגדילו את `INVITE_FAIL_RATE_LIMIT_MAX` ב-`.env` והפעילו מחדש (הספירה בזיכרון, אז גם restart מאפס אותה). ודאו ש-`TRUST_PROXY` נכון, אחרת כל המשתמשים נראים כ-IP של nginx (סעיף 4.5).
+
+השבתת משתמש (`POST /api/admin/users/:id/disable`) מנתקת אותו מיד וחוסמת כניסה; `enable` מחזיר. פעולות הזמנה/השבתה/קידום נרשמות בטבלה `admin_audit`. בדיקת העשן יוצרת משתמש רק כש-`SMOKE_INVITE=<טוקן חד-פעמי>` מוגדר; **בלעדיו היא מדלגת על בדיקות החשבון** (סעיף 4.8).
 
 ### 5.5 אם `TOKEN_ENC_KEY` אבד
 
