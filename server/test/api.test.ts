@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
+import { randomBytes } from 'crypto';
 import { createApp } from '../src/app.js';
+import db from '../src/db.js';
+import { encryptPat } from '../src/crypto.js';
 
 const app = createApp();
+const PAT = 'riseup_pat_' + 'A'.repeat(30);
 
 describe('API', () => {
   it('GET /api/health', async () => {
@@ -18,13 +22,44 @@ describe('API', () => {
     expect(csp).not.toContain('upgrade-insecure-requests');
   });
 
-  it('creates and lists a card (DB-backed)', async () => {
+  it('POST /api/cards returns 409 when no owner user exists', async () => {
+    expect((await request(app).post('/api/cards').send({ name: 'x' })).status).toBe(409);
+    expect((db.prepare(`SELECT COUNT(*) n FROM cards`).get() as any).n).toBe(0);
+  });
+
+  it('creates and lists a card (DB-backed), owned by the legacy owner', async () => {
+    db.prepare(`INSERT INTO users (id, email, password_hash, is_admin) VALUES ('owner', 'o@x.com', 'x', 1)`).run();
     const created = await request(app).post('/api/cards').send({ name: 'Test card', last4: '1234' });
     expect(created.status).toBe(201);
 
     const list = await request(app).get('/api/cards');
     expect(list.status).toBe(200);
     expect(list.body.some((c: any) => c.id === created.body.id && c.credentials === undefined)).toBe(true);
+    expect((db.prepare(`SELECT user_id FROM cards WHERE id = ?`).get(created.body.id) as any).user_id).toBe('owner');
+  });
+
+  it('GET /api/riseup/status returns a JSON error (no stack) when the token cannot be decrypted', async () => {
+    const goodKey = randomBytes(32).toString('base64');
+    const enc = encryptPat(PAT, 'owner', { TOKEN_ENC_KEY: goodKey });
+    db.prepare(`INSERT INTO user_riseup (user_id, pat_ciphertext, iv, tag, key_version) VALUES ('owner', ?, ?, ?, ?)`)
+      .run(enc.ciphertext, enc.iv, enc.tag, enc.keyVersion);
+    const saved = process.env.TOKEN_ENC_KEY;
+    try {
+      process.env.TOKEN_ENC_KEY = goodKey;
+      const ok = await request(app).get('/api/riseup/status');
+      expect(ok.status).toBe(200);
+      expect(ok.body.connected).toBe(true);
+
+      process.env.TOKEN_ENC_KEY = randomBytes(32).toString('base64');
+      const bad = await request(app).get('/api/riseup/status');
+      expect(bad.status).toBe(500);
+      expect(bad.headers['content-type']).toMatch(/json/);
+      expect(Object.keys(bad.body)).toEqual(['error']);
+      expect(bad.text).not.toMatch(/Failed to decrypt|at .*\.(ts|js)|Error:/);
+    } finally {
+      if (saved === undefined) delete process.env.TOKEN_ENC_KEY; else process.env.TOKEN_ENC_KEY = saved;
+      db.prepare(`DELETE FROM user_riseup`).run();
+    }
   });
 
   it('rejects invalid card body', async () => {

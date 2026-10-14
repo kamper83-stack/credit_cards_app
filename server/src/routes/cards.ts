@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
-import db from '../db.js';
+import db, { getLegacyOwnerId } from '../db.js';
 import { z } from 'zod';
 
 const router = Router();
@@ -27,13 +27,17 @@ router.post('/', (req, res) => {
   const parsed = CardSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
+  // TODO(phase3/4): use the authenticated user instead of the single-owner shim.
+  const userId = getLegacyOwnerId();
+  if (!userId) return res.status(409).json({ error: 'לא הוגדר משתמש מנהל. הגדר ADMIN_EMAIL ו-ADMIN_PASSWORD והפעל מחדש.' });
+
   const id = randomUUID();
   const { name, last4, color } = parsed.data;
 
   db.prepare(`
-    INSERT INTO cards (id, name, provider, last4, color, source)
-    VALUES (?, ?, 'manual', ?, ?, 'manual')
-  `).run(id, name, last4 ?? null, color ?? '#6366f1');
+    INSERT INTO cards (id, name, provider, last4, color, source, user_id)
+    VALUES (?, ?, 'manual', ?, ?, 'manual', ?)
+  `).run(id, name, last4 ?? null, color ?? '#6366f1', userId);
 
   res.status(201).json({ id, name, last4, color });
 });

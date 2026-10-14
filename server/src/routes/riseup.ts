@@ -1,7 +1,7 @@
 import { Router, type Response } from 'express';
 import { randomUUID } from 'crypto';
 import db, { getLegacyOwnerId } from '../db.js';
-import { encryptPat, decryptPat } from '../crypto.js';
+import { encryptPat, decryptAndUpgrade } from '../crypto.js';
 import { z } from 'zod';
 import { isValidPatFormat, testRiseupConnection, fetchRiseupCreditCardData, accountKey } from '../riseup.js';
 
@@ -14,9 +14,11 @@ function requireOwner(res: Response): string | null {
   return id;
 }
 
+const DECRYPT_FAILED = 'פענוח הטוקן נכשל. בדוק את TOKEN_ENC_KEY.';
+
+/** Decrypts (and lazily re-encrypts with the current key). Throws on failure; callers must catch. */
 function getPat(userId: string): string | undefined {
-  const row = db.prepare(`SELECT pat_ciphertext, iv, tag, key_version FROM user_riseup WHERE user_id = ?`).get(userId) as any;
-  return row ? decryptPat(row, userId) : undefined;
+  return decryptAndUpgrade(db, userId);
 }
 
 function getLastSync(userId: string): number | null {
@@ -30,7 +32,13 @@ function maskPat(pat: string): string {
 
 router.get('/status', (_req, res) => {
   const userId = getLegacyOwnerId();
-  const pat = userId ? getPat(userId) : undefined;
+  let pat: string | undefined;
+  try {
+    pat = userId ? getPat(userId) : undefined;
+  } catch (err: any) {
+    console.error('Token decryption failed:', err.message);
+    return res.status(500).json({ error: DECRYPT_FAILED });
+  }
   res.json({
     connected: !!pat,
     tokenPreview: pat ? maskPat(pat) : null,
@@ -90,7 +98,7 @@ router.post('/sync', async (req, res) => {
     pat = getPat(userId);
   } catch (err: any) {
     console.error('Token decryption failed:', err.message);
-    return res.status(500).json({ error: 'פענוח הטוקן נכשל. בדוק את TOKEN_ENC_KEY.' });
+    return res.status(500).json({ error: DECRYPT_FAILED });
   }
   if (!pat) return res.status(400).json({ error: 'לא מחובר ל-RiseUp. הזן טוקן גישה בהגדרות.' });
 

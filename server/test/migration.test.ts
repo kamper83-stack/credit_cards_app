@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import { openDatabase } from '../src/db.js';
-import { runStartupMigrations } from '../src/migrate.js';
-import { encryptPat, decryptPat } from '../src/crypto.js';
+import { runStartupMigrations, MigrationError } from '../src/migrate.js';
+import { encryptPat, decryptPat, decryptAndUpgrade, upgradeAllRows } from '../src/crypto.js';
 import { hashPassword, verifyPassword } from '../src/password.js';
 
 const KEY = randomBytes(32).toString('base64');
@@ -19,7 +19,7 @@ beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccapp-')); dbFil
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
 /** Create a DB with the pre-multi-user schema and some rows. */
-function makeLegacyDb(withPat = true) {
+function makeLegacyDb(withPat = true, opts: { orphans?: boolean; stalePatCopy?: boolean } = {}) {
   const d = new Database(dbFile);
   d.exec(`
     CREATE TABLE cards (id TEXT PRIMARY KEY, name TEXT NOT NULL, provider TEXT NOT NULL, last4 TEXT,
@@ -42,8 +42,21 @@ function makeLegacyDb(withPat = true) {
     INSERT INTO sync_log (card_id, status, message) VALUES ('riseup','success','ok');
   `);
   if (withPat) d.prepare(`INSERT INTO settings VALUES ('riseup_pat', ?), ('riseup_last_sync', '1700000000')`).run(PAT);
+  if (opts.stalePatCopy) { // leaves the PAT in a free page of the file
+    d.prepare(`INSERT INTO settings VALUES ('old_copy', ?)`).run(PAT + 'x'.repeat(3000));
+    d.prepare(`DELETE FROM settings WHERE key = 'old_copy'`).run();
+  }
+  if (opts.orphans) {
+    d.pragma('foreign_keys = OFF');
+    d.exec(`INSERT INTO transactions (id, card_id, amount, date) VALUES ('t9','ghost',1,'2026-01-09');
+      INSERT INTO goals (id, card_id, name, target_amount, period_type) VALUES ('g9','ghost','Orphan',1,'monthly');`);
+  }
   d.close();
 }
+
+const sha = (f: string) => createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+const backupsOf = () => fs.readdirSync(dir).filter(f => f.includes('.bak-'));
+const rowOf = (e: ReturnType<typeof encryptPat>) => ({ pat_ciphertext: e.ciphertext, iv: e.iv, tag: e.tag, key_version: e.keyVersion });
 
 const pkOf = (d: Database.Database) =>
   (d.prepare(`PRAGMA table_info(transactions)`).all() as any[]).filter(c => c.pk > 0).sort((a, b) => a.pk - b.pk).map(c => c.name);
@@ -130,6 +143,133 @@ describe('legacy migration', () => {
   });
 });
 
+describe('pre-flight (B1)', () => {
+  it('3 failing starts without env: no backup, DB file byte-identical, still legacy', () => {
+    makeLegacyDb();
+    const before = sha(dbFile);
+    const entries = fs.readdirSync(dir).sort();
+    for (const env of [{}, { ADMIN_EMAIL: ENV.ADMIN_EMAIL, ADMIN_PASSWORD: ENV.ADMIN_PASSWORD }, { TOKEN_ENC_KEY: KEY }]) {
+      expect(() => openDatabase(dbFile, { env })).toThrow(MigrationError);
+    }
+    expect(backupsOf()).toHaveLength(0);
+    expect(fs.readdirSync(dir).sort()).toEqual(entries); // no -wal/-shm/backup appeared
+    expect(sha(dbFile)).toBe(before);
+    const d = new Database(dbFile, { readonly: true });
+    expect(pkOf(d)).toEqual(['id']);
+    expect(d.prepare(`SELECT 1 FROM sqlite_master WHERE name = 'idx_cards_riseup_account'`).get()).toBeTruthy();
+    expect(d.prepare(`SELECT 1 FROM sqlite_master WHERE name = 'users'`).get()).toBeUndefined();
+    d.close();
+  });
+
+  it('creates the backup only once even if a start succeeds past pre-flight repeatedly; mode 0600', () => {
+    makeLegacyDb();
+    openDatabase(dbFile, { env: ENV }).close();
+    openDatabase(dbFile, { env: ENV }).close(); // PAT still plaintext => still "legacy"
+    expect(backupsOf()).toHaveLength(1);
+    expect(fs.statSync(path.join(dir, backupsOf()[0])).mode & 0o777).toBe(0o600);
+  });
+
+  it('backup is created 0600 even under a permissive umask', () => {
+    makeLegacyDb();
+    const old = process.umask(0o000);
+    try { openDatabase(dbFile, { env: ENV }).close(); } finally { process.umask(old); }
+    expect(fs.statSync(path.join(dir, backupsOf()[0])).mode & 0o777).toBe(0o600);
+  });
+
+  it('an already-migrated DB needs the key at pre-flight', async () => {
+    makeLegacyDb();
+    let db = openDatabase(dbFile, { env: ENV });
+    await runStartupMigrations(db, ENV);
+    db.close();
+    const before = sha(dbFile);
+    expect(() => openDatabase(dbFile, { env: {} })).toThrow(/TOKEN_ENC_KEY/);
+    expect(() => openDatabase(dbFile, { env: { TOKEN_ENC_KEY: randomBytes(32).toString('base64') } })).toThrow(/Cannot decrypt/);
+    expect(sha(dbFile)).toBe(before);
+    db = openDatabase(dbFile, { env: ENV });
+    db.close();
+  });
+});
+
+describe('orphan rows during transactions rebuild (S1)', () => {
+  it('rebuilds with FK on, preserves orphans in a side table, warns', async () => {
+    makeLegacyDb(true, { orphans: true });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const db = openDatabase(dbFile);
+    expect(pkOf(db)).toEqual(['card_id', 'id']);
+    expect(db.prepare(`SELECT COUNT(*) n FROM transactions`).get()).toEqual({ n: 3 });
+    const side = (db.prepare(`SELECT name FROM sqlite_master WHERE name LIKE 'transactions_orphaned_%'`).all() as any[]);
+    expect(side).toHaveLength(1);
+    expect(db.prepare(`SELECT id FROM "${side[0].name}"`).all()).toEqual([{ id: 't9' }]);
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/1 transaction/);
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/1 goal/);
+    expect(db.prepare(`SELECT COUNT(*) n FROM goals`).get()).toEqual({ n: 2 });
+    await runStartupMigrations(db, ENV);
+    db.close();
+    warn.mockRestore();
+  });
+});
+
+describe('startup safety nets', () => {
+  it('crash mid-migration commits nothing and a rerun succeeds', async () => {
+    makeLegacyDb();
+    const db = openDatabase(dbFile);
+    db.exec(`CREATE TRIGGER boom BEFORE DELETE ON settings WHEN OLD.key = 'riseup_pat' BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+    await expect(runStartupMigrations(db, ENV)).rejects.toThrow(/boom/);
+    expect(db.prepare(`SELECT COUNT(*) n FROM users`).get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM user_riseup`).get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM cards WHERE user_id IS NULL`).get()).toEqual({ n: 2 });
+    expect((db.prepare(`SELECT value FROM settings WHERE key='riseup_pat'`).get() as any).value).toBe(PAT);
+    db.exec(`DROP TRIGGER boom`);
+    await runStartupMigrations(db, ENV);
+    expect(db.prepare(`SELECT COUNT(*) n FROM users`).get()).toEqual({ n: 1 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM user_riseup`).get()).toEqual({ n: 1 });
+    expect(db.prepare(`SELECT COUNT(*) n FROM settings WHERE key='riseup_pat'`).get()).toEqual({ n: 0 });
+    db.close();
+  });
+
+  it('purges the old plaintext PAT from the raw DB file (free pages) and warns about the backup', async () => {
+    makeLegacyDb(true, { stalePatCopy: true });
+    expect(fs.readFileSync(dbFile).includes(Buffer.from(PAT))).toBe(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const db = openDatabase(dbFile);
+    await runStartupMigrations(db, ENV);
+    db.close();
+    for (const f of [dbFile, `${dbFile}-wal`]) {
+      if (fs.existsSync(f)) expect(fs.readFileSync(f).includes(Buffer.from(PAT))).toBe(false);
+    }
+    const msg = warn.mock.calls.flat().join('\n');
+    expect(msg).toMatch(/PLAINTEXT/);
+    expect(msg).toMatch(/delete the backup/);
+    warn.mockRestore(); log.mockRestore();
+  });
+
+  it('refuses to start (migrated DB) without the key, or with an unknown key_version', async () => {
+    makeLegacyDb();
+    const db = openDatabase(dbFile);
+    await runStartupMigrations(db, ENV);
+    await expect(runStartupMigrations(db, { })).rejects.toThrow(/TOKEN_ENC_KEY/);
+    await expect(runStartupMigrations(db, { TOKEN_ENC_KEY: KEY, TOKEN_ENC_KEY_VERSION: '5' })).rejects.toThrow(/key_version 1.*TOKEN_ENC_KEY_PREV/s);
+    await expect(runStartupMigrations(db, { TOKEN_ENC_KEY: randomBytes(32).toString('base64') })).rejects.toThrow(/Cannot decrypt the stored RiseUp token/);
+    db.close();
+  });
+
+  it('ADMIN_PASSWORD_FILE works, is trimmed of the trailing newline, and conflicts with ADMIN_PASSWORD', async () => {
+    makeLegacyDb(false);
+    const pwFile = path.join(dir, 'pw');
+    fs.writeFileSync(pwFile, 'file based password\n');
+    const db = openDatabase(dbFile);
+    const env = { TOKEN_ENC_KEY: KEY, ADMIN_EMAIL: 'a@example.com', ADMIN_PASSWORD_FILE: pwFile };
+    await expect(runStartupMigrations(db, { ...env, ADMIN_PASSWORD: 'something else long' })).rejects.toThrow(/only one/);
+    await expect(runStartupMigrations(db, { ...env, ADMIN_PASSWORD_FILE: path.join(dir, 'missing') })).rejects.toThrow(/could not be read/);
+    await runStartupMigrations(db, env);
+    const admin = db.prepare(`SELECT password_hash FROM users`).get() as any;
+    expect(await verifyPassword(admin.password_hash, 'file based password')).toBe(true);
+    db.close();
+  });
+});
+
 describe('transactions keyed by (card_id, id)', () => {
   it('lets cards of different users share a transaction id; upsert does not overwrite the other row', async () => {
     const db = openDatabase(dbFile);
@@ -188,6 +328,60 @@ describe('crypto', () => {
     expect(fresh.keyVersion).toBe(2);
     expect(decryptPat(toRow(fresh), 'u1', rotated)).toBe(PAT);
     expect(() => decryptPat(toRow(old), 'u1', { ...rotated, TOKEN_ENC_KEY_PREV: undefined })).toThrow(/TOKEN_ENC_KEY_PREV/);
+  });
+});
+
+describe('crypto hardening and rotation', () => {
+  it('rejects truncated / wrong-length tag and iv with a generic error', () => {
+    const env = { TOKEN_ENC_KEY: KEY };
+    const e = encryptPat(PAT, 'u1', env);
+    for (const bad of [{ tag: e.tag.subarray(0, 8) }, { tag: e.tag.subarray(0, 4) }, { iv: e.iv.subarray(0, 8) }, { iv: Buffer.concat([e.iv, Buffer.alloc(4)]) }]) {
+      expect(() => decryptPat({ ...rowOf(e), ...bad }, 'u1', env)).toThrow(/^Failed to decrypt token \(wrong key, wrong user, or tampered data\)$/);
+    }
+  });
+
+  function setup() {
+    const db = openDatabase(':memory:');
+    db.prepare(`INSERT INTO users (id,email,password_hash) VALUES ('u1','u1@x.com','x')`).run();
+    return db;
+  }
+  const store = (db: Database.Database, e: ReturnType<typeof encryptPat>) =>
+    db.prepare(`INSERT OR REPLACE INTO user_riseup (user_id, pat_ciphertext, iv, tag, key_version, last_sync) VALUES ('u1', ?, ?, ?, ?, 42)`)
+      .run(e.ciphertext, e.iv, e.tag, e.keyVersion);
+  const version = (db: Database.Database) => (db.prepare(`SELECT key_version v, last_sync s FROM user_riseup`).get() as any);
+
+  it('lazily re-encrypts on decrypt, then survives two rotations in a row', () => {
+    const k1 = randomBytes(32).toString('base64'), k2 = randomBytes(32).toString('base64'), k3 = randomBytes(32).toString('base64');
+    const db = setup();
+    store(db, encryptPat(PAT, 'u1', { TOKEN_ENC_KEY: k1 }));
+
+    const env2 = { TOKEN_ENC_KEY: k2, TOKEN_ENC_KEY_VERSION: '2', TOKEN_ENC_KEY_PREV: k1 };
+    expect(decryptAndUpgrade(db, 'u1', env2)).toBe(PAT);
+    expect(version(db)).toEqual({ v: 2, s: 42 });
+
+    // second rotation: only k2 (now PREV) is needed, k1 is gone
+    const env3 = { TOKEN_ENC_KEY: k3, TOKEN_ENC_KEY_VERSION: '3', TOKEN_ENC_KEY_PREV: k2 };
+    expect(decryptAndUpgrade(db, 'u1', env3)).toBe(PAT);
+    expect(version(db).v).toBe(3);
+    expect(decryptAndUpgrade(db, 'u1', { TOKEN_ENC_KEY: k3, TOKEN_ENC_KEY_VERSION: '3' })).toBe(PAT); // PREV no longer needed
+    db.close();
+  });
+
+  it('startup pass upgrades all rows and logs the count; a skipped rotation is reported', async () => {
+    const k1 = randomBytes(32).toString('base64'), k2 = randomBytes(32).toString('base64'), k3 = randomBytes(32).toString('base64');
+    const db = setup();
+    store(db, encryptPat(PAT, 'u1', { TOKEN_ENC_KEY: k1 }));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const env2 = { TOKEN_ENC_KEY: k2, TOKEN_ENC_KEY_VERSION: '2', TOKEN_ENC_KEY_PREV: k1 };
+    await runStartupMigrations(db, env2);
+    expect(log.mock.calls.flat().join('\n')).toMatch(/1 rows re-encrypted/);
+    expect(upgradeAllRows(db, env2)).toBe(0);
+    expect(version(db).v).toBe(2);
+    // jumping to v4 without passing through v3 cannot read a v2 row
+    await expect(runStartupMigrations(db, { TOKEN_ENC_KEY: k3, TOKEN_ENC_KEY_VERSION: '4', TOKEN_ENC_KEY_PREV: k2 }))
+      .rejects.toThrow(/key_version 2/);
+    log.mockRestore();
+    db.close();
   });
 });
 

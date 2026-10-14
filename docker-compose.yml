@@ -21,6 +21,7 @@ services:
       - TOKEN_ENC_KEY_PREV
       - ADMIN_EMAIL
       - ADMIN_PASSWORD
+      - ADMIN_PASSWORD_FILE
     volumes:
       - ./data:/app/data
     healthcheck:

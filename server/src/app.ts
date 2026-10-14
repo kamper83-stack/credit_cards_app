@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
@@ -89,6 +89,14 @@ export function createApp(options: AppOptions = {}) {
       res.sendFile(path.join(clientDist, 'index.html'));
     });
   }
+
+  // Last-resort handler: JSON only, never a stack trace or native error text.
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('Unhandled error:', err?.message);
+    if (res.headersSent) return;
+    const status = err?.status && err.status >= 400 && err.status < 500 ? err.status : 500;
+    res.status(status).json({ error: status === 500 ? 'Internal server error' : 'Bad request' });
+  });
 
   return app;
 }
